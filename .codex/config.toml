@@ -1,0 +1,7 @@
+# Native agent definitions inherit MCP servers from the parent Codex session.
+[mcp_servers.playwright-test]
+command = "npx"
+args = ["--no-install", "playwright", "run-test-mcp-server"]
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+env = { AGENT_SEED = "1" }

@@ -1,0 +1,10 @@
+node_modules/
+package-lock.json
+playwright-report/
+test-results/
+blob-report/
+.cache/
+.playwright-mcp/
+# Playwright owns these generated definitions. Regenerate rather than format.
+.codex/
+.github/agents/
