@@ -15,7 +15,7 @@ An agent-native end-to-end and API test framework covering **5 critical UI journ
 
 ```bash
 # 1. Clone the repository and enter the project folder
-git clone <YOUR_REPO_URL>
+git clone git@github.com:karthicksoftware/pw-automation-suite.git
 cd pw-automation-suite
 
 # 2. Use Node 24 LTS (optional if Node >= 24 is already active)
