@@ -1,4 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
+import { expect } from '@playwright/test';
 
 const CART_PATH = '/view_cart';
 
@@ -8,17 +9,21 @@ export class CartRow {
   readonly unitPrice;
   readonly quantity;
   readonly total;
+  readonly qtyDelete;
 
   constructor(readonly root: Locator) {
     this.name = root.locator('.cart_description h4 a');
     this.unitPrice = root.locator('.cart_price p');
     this.quantity = root.locator('.cart_quantity button');
     this.total = root.locator('.cart_total_price');
+    this.qtyDelete = root.locator('.cart_quantity_delete');
   }
 
   /** Removes this line; the caller verifies disappearance or the empty-cart state. */
-  async remove() {
-    await this.root.locator('.cart_quantity_delete').click();
+  async removeProduct() {
+    await expect(this.qtyDelete).toBeVisible();
+    await expect(this.qtyDelete).toBeEnabled();
+    await this.qtyDelete.click();
   }
 }
 

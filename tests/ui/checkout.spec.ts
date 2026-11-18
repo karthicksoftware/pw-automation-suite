@@ -12,6 +12,8 @@ test('UI-005 checks out an order with the correct address and total', async ({
   await app.productDetails.goto(product.id);
   await app.productDetails.addToCart(quantity);
   await app.cartModal.viewCart();
+  let row = app.cart.product(product.id);
+  await expect(row.root).toHaveCount(1);
   await app.cart.proceedToCheckout();
 
   await expect(app.checkout.deliveryAddress).toContainText(
@@ -21,7 +23,7 @@ test('UI-005 checks out an order with the correct address and total', async ({
   await expect(app.checkout.deliveryAddress).toContainText(account.country);
   await expect(app.checkout.billingAddress).toContainText(account.address1);
   await expect(app.checkout.billingAddress).toContainText(account.zipcode);
-  const row = app.checkout.product(product.id);
+  row = app.checkout.product(product.id);
   const expectedTotal = rupeesToPaise(product.price) * quantity;
   await expectCartLine(row, {
     name: product.name,

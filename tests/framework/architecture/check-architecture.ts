@@ -82,7 +82,7 @@ export function analyzeSource(file: string, text: string): Violation[] {
       domain: ['domain'],
       data: ['domain', 'data'],
       config: ['config'],
-      api: ['api', 'domain'],
+      api: ['api', 'config', 'domain'],
       pages: ['pages', 'domain'],
       assertions: ['assertions', 'pages', 'domain'],
       fixtures: ['fixtures', 'api', 'pages', 'data', 'domain', 'config', 'assertions'],

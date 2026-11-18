@@ -28,7 +28,7 @@
 | **Page Objects (POM)** | `src/pages/**/*.ts`                    | `src/pages`, `src/domain`                                | Scoped Playwright `Locator` ownership and assertion-free UI interactions  |
 | **API Clients**        | `src/api/*.ts`                         | `src/api`, `src/domain`                                  | Form-encoded transport calls and runtime Zod response parsing             |
 | **Factories & Domain** | `src/data/*.ts`, `src/domain/*.ts`     | `src/domain`, `src/data`                                 | Synthetic user/payment generation, Zod schemas, integer-paise arithmetic  |
-| **AST & Unit Checks**  | `tests/framework/**/*.ts`              | Node `node:test` runner + TypeScript compiler AST        | 39 offline checks verifying boundaries, teardown, ad filters, and math    |
+| **AST & Unit Checks**  | `tests/framework/**/*.ts`              | Node `node:test` runner + TypeScript compiler AST        | 59 offline checks verifying boundaries, teardown, ad filters, and math    |
 
 ## 1. Composed Page Objects with a Single Typed Fixture Entrypoint
 
@@ -142,6 +142,7 @@ export async function userDraftFixture(
 
 - **Decoupled HTTP & Business Status (`src/api/read-response.ts`)**: `automationexercise.com` returns `Content-Type: text/html` for JSON endpoints and wraps business status codes (`200`, `201`, `404`, `405`) inside an `HTTP 200` body. Our clients validate HTTP transport first, then parse the payload through **Zod schemas (`src/domain/contracts.ts`)**.
 - **Custom Playwright Matcher (`toHaveApiOutcome`)**: Extends Playwright's `expect` so tests verify both layers declaratively while redacting sensitive fields (like user passwords) from failure diffs.
+- **Bounded HTTP 503 Recovery (`src/api/retry-request.ts`)**: Read-only requests and opt-in fixture cleanup use three total attempts, 1s/2s fallback backoff, a 15s monotonic transport deadline, and bounded `Retry-After` handling before response parsing. Creation and explicit deletion remain single-shot, preserving their exact API contract assertions. Sanitized retry history is attached even when transport recovery allows the test to pass.
 - **Integer-Paise Currency Math (`src/domain/money.ts`)**: Converts display prices (`"Rs. 1,234.50"`) into integer paise (`123_450`) before multiplication or comparison.
 
 ```ts
@@ -170,6 +171,7 @@ export function rupeesToPaise(text: string): number {
 ### ❌ What I Rejected and Why
 
 - **Checking `expect(response.ok()).toBeTruthy()` Alone**: A `404 User not found!` or `405 Method not supported` from this backend still arrives with `HTTP 200 OK`, causing naive status checks to pass silently on broken flows.
+- **Blanket Retries for Every 5xx or Mutation**: These can conceal permanent failures and repeat an operation the server already applied. Retry only the observed 503 status on reviewed repeatable operations; leave schema, business, and assertion failures intact. Retry histories preserve evidence of service instability.
 - **Compile-Time Type Casts (`await response.json() as ProductList`)**: TypeScript types vanish at runtime; Zod catches schema drift immediately at the API boundary.
 
 ### 🔄 What Constraint Would Flip the Decision
@@ -216,11 +218,11 @@ context: async ({ context }, use) => {
 
 ### ✅ What I Chose
 
-- **AST & Type-Aware Lint Guardrails (`npm run verify`)**: Combines Prettier, `tsc --noEmit`, `eslint` (`@typescript-eslint/no-floating-promises`, `playwright/no-conditional-in-test`), `check-architecture.ts`, and 39 offline framework unit tests into a single fast command.
+- **AST & Type-Aware Lint Guardrails (`npm run verify`)**: Combines Prettier, `tsc --noEmit`, `eslint` (`@typescript-eslint/no-floating-promises`, `playwright/no-conditional-in-test`), `check-architecture.ts`, and 59 offline framework unit tests into a single fast command.
 - **Seed-Preserving Native Agent Loop (`scripts/init-agents.mjs`, `.codex/`)**: Configures Playwright's native `planner`, `generator`, and `healer` agents for the Codex loop while preserving our fixture-aware `tests/seed.spec.ts` (`AGENT_SEED=1`).
 - **Deterministic 3-Job GitHub Actions Workflow (`.github/workflows/playwright.yml`)**: Although CI/CD is listed as out-of-scope in the prompt (with instructions to document it here if included), I added a minimal, production-grade pipeline:
   1. `quality` job (`npm run verify` — runs in seconds without installing browsers).
-  2. `api` job (`npm run test:api` — proves API contract tests need zero browser binaries).
+  2. `api` job (`npm run test:api` — no browser binaries; bounded request recovery plus one whole-test CI retry with a fresh account identity per attempt; flaky outcomes still fail CI).
   3. `ui` job (`npm run test:ui` — runs Chromium journeys with `failOnFlakyTests: true` and 7-day trace/HTML artifact uploads).
 
 ```ts
