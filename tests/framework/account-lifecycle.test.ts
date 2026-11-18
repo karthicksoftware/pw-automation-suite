@@ -16,6 +16,7 @@ function createHarness(
   } = {},
 ) {
   const deletedUsers: Credentials[] = [];
+  const cleanupRetries: boolean[] = [];
   const order: string[] = [];
   const attachments: Parameters<FixtureInfo['attach']>[] = [];
   const testInfo: FixtureInfo = {
@@ -34,9 +35,10 @@ function createHarness(
   const dependencies: FixtureDependencies = {
     api: {
       accounts: {
-        delete: (user) => {
+        delete: (user, deleteOptions) => {
           order.push('cleanup');
           deletedUsers.push(user);
+          cleanupRetries.push(deleteOptions?.retryOn503 === true);
           if (options.statusDuringCleanup) testInfo.status = options.statusDuringCleanup;
           if (options.cleanupFailure !== undefined) {
             // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- Exercise normalization of non-Error transport failures.
@@ -50,7 +52,7 @@ function createHarness(
       },
     },
   };
-  return { dependencies, testInfo, deletedUsers, order, attachments };
+  return { dependencies, testInfo, deletedUsers, cleanupRetries, order, attachments };
 }
 
 await test('the fixture deletes its owned identity after use and accepts an already absent account', async () => {
@@ -70,6 +72,7 @@ await test('the fixture deletes its owned identity after use and accepts an alre
     assert.deepEqual(harness.order, ['use', 'cleanup']);
     assert.equal(harness.deletedUsers.length, 1);
     assert.equal(harness.deletedUsers[0], ownedUser);
+    assert.deepEqual(harness.cleanupRetries, [true]);
     assert.deepEqual(harness.attachments, []);
   }
 });

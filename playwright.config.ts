@@ -10,7 +10,7 @@ export default defineConfig({
   workers: environment.workers,
   timeout: 90_000,
   globalTimeout: 15 * 60_000,
-  expect: { timeout: 10_000 },
+  expect: { timeout: 30_000 },
   outputDir: 'test-results/artifacts',
   reporter: [
     ['list'],
@@ -21,7 +21,7 @@ export default defineConfig({
     baseURL: environment.baseURL,
     serviceWorkers: 'block',
     testIdAttribute: 'data-qa',
-    actionTimeout: 10_000,
+    actionTimeout: 30_000,
     navigationTimeout: 30_000,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',

@@ -19,7 +19,7 @@ test('UI-004 calculates cart quantities and totals and removes a product', async
     totalPaise: rupeesToPaise(product.price) * quantity,
   });
 
-  await row.remove();
+  await row.removeProduct();
   await expect(row.root).toHaveCount(0);
   await expect(app.cart.emptyMessage).toBeVisible();
 });

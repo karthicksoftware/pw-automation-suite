@@ -3,7 +3,7 @@
 **Target Application:** [Automation Exercise](https://automationexercise.com)  
 **Tech Stack:** Playwright `1.65` · TypeScript `5.9` (Strict ESM) · Zod `4.6` · Node.js `24 LTS` · Codex MCP Agents
 
-An agent-native end-to-end and API test framework covering **5 critical UI journeys**, **4 API contract scenarios**, and **39 offline AST/framework checks**—designed so both engineers and AI coding agents contribute safely through a single typed fixture surface.
+An agent-native end-to-end and API test framework covering **5 critical UI journeys**, **4 API contract scenarios**, and **59 offline AST/framework checks**—designed so both engineers and AI coding agents contribute safely through a single typed fixture surface.
 
 > [!TIP]
 > **Zero-Config Local Execution**
@@ -27,7 +27,7 @@ npm ci
 npx playwright install chromium
 # (On Linux / Ubuntu, use: npx playwright install --with-deps chromium)
 
-# 4. Run static verification (Prettier, TypeScript, ESLint, AST rules, 39 offline unit checks)
+# 4. Run static verification (Prettier, TypeScript, ESLint, AST rules, 59 offline unit checks)
 npm run verify
 
 # 5. Execute all 9 critical API & UI scenarios
@@ -46,8 +46,8 @@ npm test
 | `npm run test:ui -- --debug`                          | Open Playwright Inspector                                                        |
 | `npm test -- --workers=2`                             | Override worker count                                                            |
 | `npm run test:ui -- --shard=1/2`                      | Run native Playwright CLI sharding                                               |
-| `npm run verify`                                      | Run **formatting, types, lint, architecture rules, and 39 framework unit tests** |
-| `npm run test:framework`                              | Run only the 39 offline framework unit tests (Node test runner)                  |
+| `npm run verify`                                      | Run **formatting, types, lint, architecture rules, and 59 framework unit tests** |
+| `npm run test:framework`                              | Run only the 59 offline framework unit tests (Node test runner)                  |
 | `npm run check:architecture`                          | Run the repository AST architecture checker directly                             |
 | `npm run report`                                      | Open the latest HTML report (`playwright-report/index.html`)                     |
 | `npm run format`                                      | Format the repository with Prettier                                              |
@@ -65,7 +65,7 @@ npm test
 | `src/domain`                   | Domain types, Zod response schemas, and integer-paise currency calculations                |
 | `src/config`                   | Zod-validated environment settings (`environment.ts`)                                      |
 | `scripts`                      | Seed-preserving native agent initialization (`init-agents.mjs`)                            |
-| `tests/framework`              | 39 offline unit tests covering AST rules, account cleanup, ad-blocking, API, and money     |
+| `tests/framework`              | 59 offline unit tests covering AST rules, account cleanup, ad-blocking, API, and money     |
 | `tests/framework/architecture` | Repository AST architecture checker, file discovery helper, and checker unit tests         |
 | `specs`, `AGENTS.md`, `.codex` | Agent contribution workflow, repository rules, native agents, and MCP configuration        |
 | `.github/workflows`            | CI quality gate, API job, and Chromium UI job                                              |
@@ -91,6 +91,14 @@ await expectCartLine(row, {
   totalPaise: rupeesToPaise(product.price) * quantity,
 });
 ```
+
+### Bounded API Transport Retries
+
+Read-only catalogue/search, account lookup, and credential verification retry **HTTP 503 only**, with **3 total attempts**, fallback delays of **1s then 2s**, and a **15s transport deadline** covering requests and backoff. A valid `Retry-After` is honored only when another request fits the remaining budget; an excessive delay stops recovery rather than sending early. Other HTTP failures, business `responseCode` errors, invalid JSON, and schema failures retain their original behavior.
+
+Creation and explicit account deletion remain single-shot because a failed response can hide a completed mutation. Fixture cleanup explicitly opts deletion into recovery and continues accepting actual business `200/404` results. No successful business response is fabricated. Native request `maxRetries` is disabled so transport retries do not multiply.
+
+Recovered and exhausted 503 operations appear in console summaries and the test report's **`api-retry-history.json`** attachment, containing method/path, status history, attempt count, delays, and elapsed time. Payloads, credentials, and URL queries are excluded. A `recovered` outcome describes HTTP transport recovery; business assertions and Zod validation still run normally. API and UI tests inherit one whole-test retry in CI and zero locally. Each test attempt owns its account identity and cleanup; creation and explicit deletion remain single-shot within an attempt. Tests that pass only on a whole-test retry are classified as flaky and still fail CI. Browser navigation failures are outside the request-level retry policy.
 
 ## 🔌 4. Fixtures, Data Isolation & Network Policy
 
@@ -128,12 +136,12 @@ await expectCartLine(row, {
 
 Defaults work without an environment file. Optionally copy `.env.example` to `.env`:
 
-| Variable      | Default                                                    |
-| :------------ | :--------------------------------------------------------- |
-| `BASE_URL`    | `https://automationexercise.com`                           |
-| `WORKERS`     | `2` locally, `1` when `CI=true` (allowed range `1`–`8`)    |
-| `TEST_RUN_ID` | Generated run namespace for disposable synthetic accounts  |
-| `CI`          | Unset; `'true'` enables 1 retry and rejects flaky outcomes |
+| Variable      | Default                                                                        |
+| :------------ | :----------------------------------------------------------------------------- |
+| `BASE_URL`    | `https://automationexercise.com`                                               |
+| `WORKERS`     | `2` locally, `1` when `CI=true` (allowed range `1`–`8`)                        |
+| `TEST_RUN_ID` | Generated run namespace for disposable synthetic accounts                      |
+| `CI`          | Unset; `'true'` enables 1 whole-test retry for API and UI; flaky outcomes fail |
 
 ## 🤖 7. Native AI Agents & CI Reports
 
@@ -141,6 +149,6 @@ Defaults work without an environment file. Optionally copy `.env.example` to `.e
   ```bash
   AGENT_SEED=1 npm test -- --project=agent-seed
   ```
-- **Contribution Guardrails:** Follow [AGENTS.md](AGENTS.md) and [specs/agent-workflow.md](https://www.google.com/search?q=specs/agent-workflow.md). `npm run verify` rejects raw `@playwright/test` imports, inline spec selectors, forbidden layer imports, sleeps, forced UI actions, skipped/focused tests, constant assertions, and floating promises.
-- **GitHub Actions & Trace Diagnostics:** `.github/workflows/playwright.yml` runs the `quality` gate (`npm run verify`) before independent `api` and `ui` jobs (`WORKERS=1`, 1 diagnostic retry, `failOnFlakyTests: true`, no AI in CI). Built-in HTML/JUnit reports, failure traces, and screenshots are retained for 7 days. Locally, inspect `playwright-report/index.html` or run `npx playwright show-trace <trace.zip>`.
+- **Contribution Guardrails:** Follow [AGENTS.md](AGENTS.md) and [specs/agent-workflow.md](specs/agent-workflow.md). `npm run verify` rejects raw `@playwright/test` imports, inline spec selectors, forbidden layer imports, sleeps, forced UI actions, skipped/focused tests, constant assertions, and floating promises.
+- **GitHub Actions & Trace Diagnostics:** `.github/workflows/playwright.yml` runs the `quality` gate (`npm run verify`) before independent `api` and `ui` jobs (`WORKERS=1`, 1 whole-test retry, `failOnFlakyTests: true`, no AI in CI). Built-in HTML/JUnit reports, failure traces, and screenshots are retained for 7 days. Locally, inspect `playwright-report/index.html` or run `npx playwright show-trace <trace.zip>`.
 - **Architecture & AI Logs:** See **[DECISIONS.md](DECISIONS.md)** for the 5 key architecture decisions and **[AI_USAGE.md](AI_USAGE.md)** for prompts, AI mistakes caught, corrections, and verification evidence.

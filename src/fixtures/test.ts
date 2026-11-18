@@ -1,8 +1,9 @@
-import { test as base, type TestInfo } from '@playwright/test';
+import { test as base, type APIRequestContext, type TestInfo } from '@playwright/test';
 import { expect } from '../assertions/api-expect.js';
 import { AccountsClient } from '../api/accounts-client.js';
 import { CatalogClient } from '../api/catalog-client.js';
 import { requireResponseCode } from '../api/read-response.js';
+import type { ApiRetryHistory } from '../api/retry-request.js';
 import { environment } from '../config/environment.js';
 import { createUser } from '../data/user-factory.js';
 import type { Account, UserDraft } from '../domain/models.js';
@@ -49,6 +50,33 @@ interface AccountFixtureInfo {
   attach: TestInfo['attach'];
 }
 
+interface ApiFixtureInfo {
+  attach: TestInfo['attach'];
+}
+
+/** Share API clients within one test and attach retry evidence after dependent cleanup. */
+export async function apiFixture(
+  { request }: { request: APIRequestContext },
+  use: (api: ApiClients) => Promise<void>,
+  testInfo: ApiFixtureInfo,
+): Promise<void> {
+  const retryHistory: ApiRetryHistory[] = [];
+  const observeRetry = (history: ApiRetryHistory): void => {
+    retryHistory.push(history);
+    console.warn(
+      `[api-retry] ${history.method} ${history.path}: ${history.outcome} after ${history.attempts.length} attempts (${Math.round(history.elapsedMs)}ms)`,
+    );
+  };
+  try {
+    await use({
+      accounts: new AccountsClient(request, observeRetry),
+      catalog: new CatalogClient(request, observeRetry),
+    });
+  } finally {
+    await attachApiRetryHistory(retryHistory, testInfo);
+  }
+}
+
 /** Own an account identity and attempt cleanup even when provisioning or the test fails. */
 export async function userDraftFixture(
   { api }: { api: { accounts: AccountCleanupClient } },
@@ -86,9 +114,7 @@ export const test = base.extend<FrameworkFixtures>({
     await use(context);
   },
 
-  api: async ({ request }, use) => {
-    await use({ accounts: new AccountsClient(request), catalog: new CatalogClient(request) });
-  },
+  api: apiFixture,
 
   app: async ({ page }, use) => {
     await use(new Application(page));
@@ -122,7 +148,7 @@ async function cleanupOwnedAccount(
   callbackFailed: boolean,
 ): Promise<void> {
   try {
-    const result = await accounts.delete(user);
+    const result = await accounts.delete(user, { retryOn503: true });
     // Signup may fail before creation; the API lifecycle test also deletes explicitly.
     requireResponseCode(result, [200, 404], 'Clean up owned account');
   } catch (cause) {
@@ -160,4 +186,21 @@ async function attachCleanupFailure(error: Error, testInfo: AccountFixtureInfo):
     contentType: 'text/plain',
   });
   console.error(`Account cleanup failed for ${testInfo.title}: ${error.message}`);
+}
+
+/** Keep recovered service errors visible without letting attachment failures replace test errors. */
+async function attachApiRetryHistory(
+  history: readonly ApiRetryHistory[],
+  testInfo: ApiFixtureInfo,
+): Promise<void> {
+  if (history.length === 0) return;
+  const body = JSON.stringify(history, null, 2);
+  try {
+    await testInfo.attach('api-retry-history.json', {
+      body: Buffer.from(body),
+      contentType: 'application/json',
+    });
+  } catch {
+    console.warn(`API retry history attachment failed; sanitized history: ${body}`);
+  }
 }

@@ -25,6 +25,7 @@ Use the native Playwright planner, generator, and healer with the Codex loop. Re
 
 - Verify selectors against the live app. Do not guess selectors from prose.
 - No fixed sleeps, forced interactions, focused/skipped/expected-failure tests, empty tests, or floating Playwright promises.
+- Bounded HTTP 503 backoff is allowed only in the API transport retry helper. Keep its attempt/deadline limits and sanitized retry diagnostics; never add sleeps or assertion retries to business tests. Account creation and explicit deletion stay single-shot within a test attempt; only fixture cleanup opts into deletion retries. API and UI tests inherit one whole-test retry in CI, with fresh account identities per attempt; flaky outcomes still fail CI.
 - Do not mock critical flows, inject application state, or change the application under test. The context fixture may abort only the reviewed Google advertising domains (`doubleclick.net`, `googlesyndication.com` and their subdomains). Keep application endpoints live and routing out of business tests; verify network evidence before expanding this list.
 - A repair must preserve the scenario, assertions, and cleanup. Never delete a required ID, weaken assertions, or skip a failing scenario to obtain green results.
 - Stop a repair after two unsuccessful patches and report the evidence. A product defect stays a failing test.

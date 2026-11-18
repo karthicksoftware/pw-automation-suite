@@ -2,6 +2,7 @@ import type { APIRequestContext } from '@playwright/test';
 import { messageSchema, userDetailsSchema } from '../domain/contracts.js';
 import type { Credentials, UserDraft } from '../domain/models.js';
 import { readResponse } from './read-response.js';
+import { requestWithRetry, type ApiRetryObserver } from './retry-request.js';
 
 const ACCOUNT_ROUTES = {
   create: '/api/createAccount',
@@ -40,35 +41,69 @@ export function toCredentialsForm(credentials: Credentials) {
 
 /** Account operations using an injected request context; fixtures own account lifetime. */
 export class AccountsClient {
-  constructor(private readonly request: APIRequestContext) {}
+  constructor(
+    private readonly request: APIRequestContext,
+    private readonly observeRetry?: ApiRetryObserver,
+  ) {}
 
   /** Creates a remote customer. Register cleanup before calling; success is business code 201. */
   async create(user: UserDraft) {
     const response = await this.request.post(ACCOUNT_ROUTES.create, {
       form: toCreateAccountForm(user),
+      maxRetries: 0,
     });
     return readResponse(response, messageSchema);
   }
 
   /** Retrieves and validates account details for an existing email address. */
   async getByEmail(email: string) {
-    const response = await this.request.get(ACCOUNT_ROUTES.details, { params: { email } });
+    const response = await requestWithRetry(
+      (options) => this.request.get(ACCOUNT_ROUTES.details, { ...options, params: { email } }),
+      {
+        operation: 'accounts.details',
+        method: 'GET',
+        path: ACCOUNT_ROUTES.details,
+        observer: this.observeRetry,
+      },
+    );
     return readResponse(response, userDetailsSchema);
   }
 
   /** Checks credentials without logging a browser in; invalid credentials return business code 404. */
   async verifyLogin(credentials: Credentials) {
-    const response = await this.request.post(ACCOUNT_ROUTES.verifyLogin, {
-      form: toCredentialsForm(credentials),
-    });
+    const form = toCredentialsForm(credentials);
+    const response = await requestWithRetry(
+      (options) =>
+        this.request.post(ACCOUNT_ROUTES.verifyLogin, {
+          ...options,
+          form,
+        }),
+      {
+        operation: 'accounts.verifyLogin',
+        method: 'POST',
+        path: ACCOUNT_ROUTES.verifyLogin,
+        observer: this.observeRetry,
+      },
+    );
     return readResponse(response, messageSchema);
   }
 
   /** Deletes an owned account; an already absent account returns business code 404. */
-  async delete(credentials: Credentials) {
-    const response = await this.request.delete(ACCOUNT_ROUTES.delete, {
-      form: toCredentialsForm(credentials),
-    });
+  async delete(credentials: Credentials, options: { retryOn503?: boolean } = {}) {
+    const form = toCredentialsForm(credentials);
+    const send = (attempt: { timeout?: number; maxRetries: 0 }) =>
+      this.request.delete(ACCOUNT_ROUTES.delete, {
+        ...attempt,
+        form,
+      });
+    const response = options.retryOn503
+      ? await requestWithRetry(send, {
+          operation: 'accounts.cleanup',
+          method: 'DELETE',
+          path: ACCOUNT_ROUTES.delete,
+          observer: this.observeRetry,
+        })
+      : await send({ maxRetries: 0 });
     return readResponse(response, messageSchema);
   }
 }
