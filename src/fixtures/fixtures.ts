@@ -1,14 +1,15 @@
-import { test as base, type APIRequestContext, type TestInfo } from '@playwright/test';
+import { test as base, type APIRequestContext } from '@playwright/test';
 import { expect } from '../assertions/api-expect.js';
 import { AccountsClient } from '../api/accounts-client.js';
 import { CatalogClient } from '../api/catalog-client.js';
 import { requireResponseCode } from '../api/read-response.js';
-import type { ApiRetryHistory } from '../api/retry-request.js';
 import { environment } from '../config/environment.js';
+import { uiRecoveryConfig } from '../config/ui-recovery.js';
 import { createUser } from '../data/user-factory.js';
 import type { Account, UserDraft } from '../domain/models.js';
 import type { Product } from '../domain/contracts.js';
 import { Application } from '../pages/application.js';
+import { installQueueRecovery } from '../pages/queue-full-page.js';
 
 const GOOGLE_AD_DOMAINS = ['doubleclick.net', 'googlesyndication.com'];
 
@@ -44,37 +45,17 @@ interface ProductCatalogClient {
 interface AccountFixtureInfo {
   workerIndex: number;
   retry: number;
-  title: string;
-  status?: TestInfo['status'];
-  expectedStatus: TestInfo['expectedStatus'];
-  attach: TestInfo['attach'];
 }
 
-interface ApiFixtureInfo {
-  attach: TestInfo['attach'];
-}
-
-/** Share API clients within one test and attach retry evidence after dependent cleanup. */
+/** Share API clients within one test; the transport helper logs retries directly. */
 export async function apiFixture(
   { request }: { request: APIRequestContext },
   use: (api: ApiClients) => Promise<void>,
-  testInfo: ApiFixtureInfo,
 ): Promise<void> {
-  const retryHistory: ApiRetryHistory[] = [];
-  const observeRetry = (history: ApiRetryHistory): void => {
-    retryHistory.push(history);
-    console.warn(
-      `[api-retry] ${history.method} ${history.path}: ${history.outcome} after ${history.attempts.length} attempts (${Math.round(history.elapsedMs)}ms)`,
-    );
-  };
-  try {
-    await use({
-      accounts: new AccountsClient(request, observeRetry),
-      catalog: new CatalogClient(request, observeRetry),
-    });
-  } finally {
-    await attachApiRetryHistory(retryHistory, testInfo);
-  }
+  await use({
+    accounts: new AccountsClient(request),
+    catalog: new CatalogClient(request),
+  });
 }
 
 /** Own an account identity and attempt cleanup even when provisioning or the test fails. */
@@ -84,14 +65,10 @@ export async function userDraftFixture(
   testInfo: AccountFixtureInfo,
 ): Promise<void> {
   const user = createUser(environment.runId, testInfo.workerIndex, testInfo.retry);
-  let callbackFailed = false;
   try {
     await use(user);
-  } catch (error) {
-    callbackFailed = true;
-    throw error;
   } finally {
-    await cleanupOwnedAccount(api.accounts, user, testInfo, callbackFailed);
+    await cleanupOwnedAccount(api.accounts, user);
   }
 }
 
@@ -112,6 +89,12 @@ export const test = base.extend<FrameworkFixtures>({
     // Install before the page fixture creates a page; includes iframe and popup traffic.
     await context.route(isGoogleAdUrl, (route) => route.abort('blockedbyclient'));
     await use(context);
+  },
+
+  /** Installs queue recovery before exposing the page; API-only tests leave this fixture unused. */
+  page: async ({ page }, use) => {
+    await installQueueRecovery(page, environment.baseURL, uiRecoveryConfig);
+    await use(page);
   },
 
   api: apiFixture,
@@ -141,66 +124,8 @@ export { expect };
 export { expectCartLine } from '../assertions/cart.js';
 
 /** Delete only the identity owned by this fixture; an already absent account is acceptable. */
-async function cleanupOwnedAccount(
-  accounts: AccountCleanupClient,
-  user: UserDraft,
-  testInfo: AccountFixtureInfo,
-  callbackFailed: boolean,
-): Promise<void> {
-  try {
-    const result = await accounts.delete(user, { retryOn503: true });
-    // Signup may fail before creation; the API lifecycle test also deletes explicitly.
-    requireResponseCode(result, [200, 404], 'Clean up owned account');
-  } catch (cause) {
-    const testAlreadyFailed = callbackFailed || testInfo.status !== testInfo.expectedStatus;
-    await handleCleanupFailure(cause, testInfo, testAlreadyFailed);
-  }
-}
-
-/** Report teardown failures without replacing an existing provisioning or test failure. */
-async function handleCleanupFailure(
-  cause: unknown,
-  testInfo: AccountFixtureInfo,
-  testAlreadyFailed: boolean,
-): Promise<void> {
-  const cleanupError = cause instanceof Error ? cause : new Error(String(cause));
-  try {
-    await attachCleanupFailure(cleanupError, testInfo);
-  } catch (reportingError) {
-    if (!testAlreadyFailed) {
-      throw new AggregateError(
-        [cleanupError, reportingError],
-        'Account cleanup and diagnostic reporting failed',
-      );
-    }
-    console.error(
-      `Account cleanup failed: ${cleanupError.message}; diagnostic reporting also failed.`,
-    );
-  }
-  if (!testAlreadyFailed) throw cleanupError;
-}
-
-async function attachCleanupFailure(error: Error, testInfo: AccountFixtureInfo): Promise<void> {
-  await testInfo.attach('account-cleanup-failure', {
-    body: Buffer.from(error.message),
-    contentType: 'text/plain',
-  });
-  console.error(`Account cleanup failed for ${testInfo.title}: ${error.message}`);
-}
-
-/** Keep recovered service errors visible without letting attachment failures replace test errors. */
-async function attachApiRetryHistory(
-  history: readonly ApiRetryHistory[],
-  testInfo: ApiFixtureInfo,
-): Promise<void> {
-  if (history.length === 0) return;
-  const body = JSON.stringify(history, null, 2);
-  try {
-    await testInfo.attach('api-retry-history.json', {
-      body: Buffer.from(body),
-      contentType: 'application/json',
-    });
-  } catch {
-    console.warn(`API retry history attachment failed; sanitized history: ${body}`);
-  }
+async function cleanupOwnedAccount(accounts: AccountCleanupClient, user: UserDraft): Promise<void> {
+  const result = await accounts.delete(user, { retryOn503: true });
+  // Signup may fail before creation; the API lifecycle test also deletes explicitly.
+  requireResponseCode(result, [200, 404], 'Clean up owned account');
 }

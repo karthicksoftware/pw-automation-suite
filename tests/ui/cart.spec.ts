@@ -1,4 +1,4 @@
-import { test, expect, expectCartLine } from '../../src/fixtures/test.js';
+import { test, expect, expectCartLine } from '../../src/fixtures/fixtures.js';
 import { rupeesToPaise } from '../../src/domain/money.js';
 
 test('UI-004 calculates cart quantities and totals and removes a product', async ({

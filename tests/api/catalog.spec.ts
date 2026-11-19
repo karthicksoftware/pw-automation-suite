@@ -1,4 +1,4 @@
-import { test, expect } from '../../src/fixtures/test.js';
+import { test, expect } from '../../src/fixtures/fixtures.js';
 import { rupeesToPaise } from '../../src/domain/money.js';
 
 test('API-001 returns a valid product catalogue with unique IDs', async ({ api }) => {

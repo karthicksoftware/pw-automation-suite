@@ -1,168 +1,66 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import type { APIResponse } from '@playwright/test';
+import type { APIRequestContext, APIResponse } from '@playwright/test';
 import { apiRetryConfig } from '../config/api-retry.js';
 
-export interface ApiRetryAttempt {
-  readonly attempt: number;
-  readonly status?: number;
-  readonly elapsedMs: number;
-  delayMs?: number;
-}
+type RequestOptions = NonNullable<Parameters<APIRequestContext['fetch']>[1]>;
 
-export interface ApiRetryHistory {
-  readonly operation: string;
-  readonly method: 'GET' | 'POST' | 'DELETE';
-  readonly path: string;
-  readonly attempts: readonly ApiRetryAttempt[];
-  readonly outcome: 'recovered' | 'exhausted' | 'stopped' | 'failed';
-  readonly elapsedMs: number;
-}
-
-export type ApiRetryObserver = (history: ApiRetryHistory) => void;
-
-interface RequestOptions {
-  readonly timeout: number;
-  readonly maxRetries: 0;
-}
-
-interface RetryOperation {
-  readonly operation: string;
-  readonly method: ApiRetryHistory['method'];
-  readonly path: string;
-  readonly observer?: ApiRetryObserver | undefined;
-}
-
-interface RetryRuntime {
-  readonly now: () => number;
-  readonly wallNow: () => number;
-  readonly wait: (milliseconds: number) => Promise<void>;
-}
-
-const runtime: RetryRuntime = {
-  now: () => performance.now(),
-  wallNow: () => Date.now(),
-  wait: (milliseconds) => delay(milliseconds),
-};
-
-/** Replay a known-repeatable operation on HTTP 503, before parsing its final response. */
+/** Retry a repeatable request on HTTP 503; callers decide which operations are safe to replay. */
 export async function requestWithRetry(
-  send: (options: RequestOptions) => Promise<APIResponse>,
-  operation: RetryOperation,
-  clock: RetryRuntime = runtime,
+  request: APIRequestContext,
+  path: string,
+  options: RequestOptions,
 ): Promise<APIResponse> {
-  const started = clock.now();
-  const attempts: ApiRetryAttempt[] = [];
-  const details = {
-    ...operation,
-    path: new URL(operation.path, 'https://retry.invalid').pathname,
-  };
-  const elapsed = () => clock.now() - started;
-  const remainingBudget = () => apiRetryConfig.operationTimeoutMs - elapsed();
-  const deadlineError = () =>
-    new Error(`API retry deadline exceeded for ${details.method} ${details.path}`);
-  let previous: APIResponse | undefined;
+  const deadline = performance.now() + apiRetryConfig.operationTimeoutMs;
+  const label = `${options.method ?? 'GET'} ${new URL(path, 'https://retry.invalid').pathname}`;
+  let response: APIResponse | undefined;
 
-  function report(outcome: ApiRetryHistory['outcome']): void {
-    if (!attempts.some((attempt) => attempt.status === 503)) return;
-    reportRetryHistory(details, attempts, outcome, elapsed());
-  }
-
-  function finish(response: APIResponse, outcome: ApiRetryHistory['outcome']): APIResponse {
-    report(outcome);
-    return response;
-  }
-
-  for (let attempt = 1; attempt <= apiRetryConfig.maxAttempts; attempt++) {
-    const remainingBeforeRequest = remainingBudget();
-    if (remainingBeforeRequest <= 0) {
-      report('exhausted');
-      if (previous) return previous;
-      throw deadlineError();
-    }
-    let response: APIResponse;
-    try {
-      response = await send({
-        timeout: remainingBeforeRequest,
+  try {
+    for (let attempt = 1; attempt <= apiRetryConfig.maxAttempts; attempt++) {
+      const remaining = deadline - performance.now();
+      if (remaining <= 0) {
+        if (response) return response;
+        throw new Error(`API retry deadline exceeded for ${label}`);
+      }
+      if (attempt > 1) {
+        console.warn(
+          `[api-retry] ${label}: HTTP 503; retry ${attempt - 1}/${apiRetryConfig.maxAttempts - 1}`,
+        );
+      }
+      const next = await request.fetch(path, {
+        ...options,
+        timeout: remaining,
         maxRetries: 0,
+        failOnStatusCode: false,
       });
-    } catch (error) {
-      await previous?.dispose();
-      attempts.push({ attempt, elapsedMs: elapsed() });
-      report('failed');
-      throw error;
-    }
-    // Retain the last response until its replacement arrives, including across a backoff wait.
-    await previous?.dispose();
-    previous = response;
-    const status = response.status();
-    const entry: ApiRetryAttempt = { attempt, status, elapsedMs: elapsed() };
-    attempts.push(entry);
-    const remaining = apiRetryConfig.operationTimeoutMs - entry.elapsedMs;
+      await response?.dispose();
+      response = next;
 
-    if (remaining <= 0 && status !== 503) {
-      await response.dispose();
-      report('exhausted');
-      throw deadlineError();
-    }
-    if (status !== 503) {
-      return finish(response, response.ok() ? 'recovered' : 'stopped');
-    }
-    if (attempt === apiRetryConfig.maxAttempts || remaining <= 0) {
-      return finish(response, 'exhausted');
-    }
+      if (response.status() !== 503) {
+        if (performance.now() >= deadline) {
+          throw new Error(`API retry deadline exceeded for ${label}`);
+        }
+        return response;
+      }
+      if (attempt === apiRetryConfig.maxAttempts) return response;
 
-    const waitMs = retryDelay(response.headers()['retry-after'], attempt, clock.wallNow());
-    if (waitMs >= remaining) {
-      return finish(response, 'exhausted');
+      const waitMs = retryDelay(response.headers()['retry-after'], attempt);
+      if (waitMs >= deadline - performance.now()) return response;
+      await delay(waitMs);
     }
-    entry.delayMs = waitMs;
-    try {
-      await clock.wait(waitMs);
-    } catch (error) {
-      await response.dispose();
-      report('failed');
-      throw error;
-    }
-    if (remainingBudget() <= 0) {
-      return finish(response, 'exhausted');
-    }
+  } catch (error) {
+    await response?.dispose();
+    throw error;
   }
   throw new Error('Unreachable API retry state');
 }
 
-/** Snapshot retry evidence and fall back safely when the observer cannot report it. */
-function reportRetryHistory(
-  operation: RetryOperation,
-  attempts: readonly ApiRetryAttempt[],
-  outcome: ApiRetryHistory['outcome'],
-  elapsedMs: number,
-): void {
-  const history: ApiRetryHistory = {
-    operation: operation.operation,
-    method: operation.method,
-    path: operation.path,
-    attempts: attempts.map((attempt) => ({ ...attempt })),
-    outcome,
-    elapsedMs,
-  };
-  if (operation.observer) {
-    try {
-      operation.observer(history);
-      return;
-    } catch {
-      // Diagnostic failures must not replace transport outcomes or disclose exception payloads.
-    }
-  }
-  console.warn('API retry history:', JSON.stringify(history));
-}
-
-function retryDelay(header: string | undefined, attempt: number, wallNow: number): number {
+function retryDelay(header: string | undefined, attempt: number): number {
   const fallback = attempt * 1_000;
   if (header === undefined) return fallback;
   const value = header.trim();
   if (/^\d+$/.test(value)) return Number(value) * 1_000;
-  // Date.parse also accepts bare numbers and malformed dates; require an HTTP-date shape.
+  // Require an HTTP date: Date.parse also accepts bare numbers and malformed dates.
   if (!/^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(value)) return fallback;
-  const milliseconds = Date.parse(value) - wallNow;
+  const milliseconds = Date.parse(value) - Date.now();
   return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : fallback;
 }

@@ -1,4 +1,4 @@
-import { test, expect, expectCartLine } from '../../src/fixtures/test.js';
+import { test, expect, expectCartLine } from '../../src/fixtures/fixtures.js';
 import { createPayment } from '../../src/data/user-factory.js';
 import { rupeesToPaise } from '../../src/domain/money.js';
 

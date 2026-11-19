@@ -1,4 +1,4 @@
-import { test, expect } from '../../src/fixtures/test.js';
+import { test, expect } from '../../src/fixtures/fixtures.js';
 
 test('UI-001 registers a new customer', async ({ app, userDraft, api }) => {
   await app.auth.goto();

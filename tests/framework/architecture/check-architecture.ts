@@ -54,7 +54,7 @@ export function analyzeSource(file: string, text: string): Violation[] {
       ? relative(process.cwd(), resolve(dirname(resolve(file)), specifier)).replaceAll('\\', '/')
       : specifier;
     const bindings = statement.importClause?.namedBindings;
-    if (target === 'src/fixtures/test.js' || target === 'src/fixtures/test.ts') {
+    if (target === 'src/fixtures/fixtures.js' || target === 'src/fixtures/fixtures.ts') {
       fixtureImport = true;
       if (bindings && ts.isNamedImports(bindings)) {
         for (const binding of bindings.elements) {
@@ -73,7 +73,7 @@ export function analyzeSource(file: string, text: string): Violation[] {
       add(
         statement,
         'fixture-import',
-        'Application tests must import test/expect from src/fixtures/test.js.',
+        'Application tests must import test/expect from src/fixtures/fixtures.js.',
       );
     }
     const layer = normalized.split('/')[1];

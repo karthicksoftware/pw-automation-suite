@@ -1,4 +1,4 @@
-import { test, expect } from '../../src/fixtures/test.js';
+import { test, expect } from '../../src/fixtures/fixtures.js';
 
 test('API-003 creates, retrieves, authenticates and deletes an owned account', async ({
   api,

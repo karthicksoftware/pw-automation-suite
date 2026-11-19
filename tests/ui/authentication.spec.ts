@@ -1,4 +1,4 @@
-import { test, expect } from '../../src/fixtures/test.js';
+import { test, expect } from '../../src/fixtures/fixtures.js';
 
 test('UI-002 logs in and logs out a provisioned customer', async ({ app, account }) => {
   await app.auth.goto();

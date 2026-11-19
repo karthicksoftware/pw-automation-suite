@@ -1,4 +1,4 @@
-import { test, expect } from '../../src/fixtures/test.js';
+import { test, expect } from '../../src/fixtures/fixtures.js';
 import { rupeesToPaise } from '../../src/domain/money.js';
 
 test('UI-003 discovers a product through search and verifies its details', async ({
