@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import { syncBuiltinESMExports } from 'node:module';
+import timers from 'node:timers/promises';
 import type { APIRequestContext, APIResponse } from '@playwright/test';
 import { AccountsClient } from '../../src/api/accounts-client.js';
 import { CatalogClient } from '../../src/api/catalog-client.js';
 import { readResponse } from '../../src/api/read-response.js';
-import { requestWithRetry, type ApiRetryHistory } from '../../src/api/retry-request.js';
-import { messageSchema } from '../../src/domain/contracts.js';
+import { requestWithRetry } from '../../src/api/retry-request.js';
+import { productsSchema } from '../../src/domain/contracts.js';
 import { createUser } from '../../src/data/user-factory.js';
+
+type RequestOptions = NonNullable<Parameters<APIRequestContext['fetch']>[1]>;
 
 function response(status: number, headers: Record<string, string> = {}, payload: unknown = {}) {
   let disposed = 0;
@@ -26,32 +29,39 @@ function response(status: number, headers: Record<string, string> = {}, payload:
   return { value, disposed: () => disposed };
 }
 
-function harness() {
+function harness(context: TestContext, replies: APIResponse[] = []) {
   let elapsed = 0;
   let wall = Date.parse('Wed, 18 Nov 2026 12:00:00 GMT');
   const waits: number[] = [];
-  const histories: ApiRetryHistory[] = [];
-  const clock = {
-    now: () => elapsed,
-    wallNow: () => wall,
-    wait: (milliseconds: number) => {
-      waits.push(milliseconds);
-      elapsed += milliseconds;
-      wall += milliseconds;
-      return Promise.resolve();
-    },
+  context.mock.method(performance, 'now', () => elapsed);
+  context.mock.method(Date, 'now', () => wall);
+  const wait = context.mock.method(timers, 'setTimeout', (milliseconds = 0) => {
+    waits.push(milliseconds);
+    elapsed += milliseconds;
+    wall += milliseconds;
+    return Promise.resolve();
+  });
+  // Synchronize the helper's named ESM import with Node's mocked timer export.
+  syncBuiltinESMExports();
+  context.after(() => {
+    context.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  const log = context.mock.method(console, 'warn', () => {});
+  const send = (_path: string, _options?: RequestOptions) => {
+    const next = replies.shift();
+    assert.ok(next, 'Unexpected extra request');
+    return Promise.resolve(next);
   };
-  const operation = {
-    operation: 'catalog.products',
-    method: 'GET' as const,
-    path: '/api/productsList',
-    observer: (history: ApiRetryHistory) => histories.push(history),
-  };
+  const fetch = context.mock.fn(send);
+  const request = { fetch } as unknown as APIRequestContext;
   return {
-    clock,
-    operation,
+    request,
+    fetch,
+    send,
+    wait,
     waits,
-    histories,
+    log,
     advance: (milliseconds: number) => {
       elapsed += milliseconds;
     },
@@ -61,445 +71,416 @@ function harness() {
   };
 }
 
-await test('HTTP 503 recovery retries only the request and releases discarded responses', async () => {
-  const state = harness();
+await test('503 recovery reduces request timeouts, disposes old responses, and logs one retry', async (context) => {
   const first = response(503);
   const last = response(200);
-  const options: { timeout: number; maxRetries: 0 }[] = [];
-  const result = await requestWithRetry(
-    (attempt) => {
-      options.push(attempt);
-      state.advance(200);
-      return Promise.resolve(options.length === 1 ? first.value : last.value);
-    },
-    state.operation,
-    state.clock,
-  );
+  const state = harness(context, [first.value, last.value]);
+  state.fetch.mock.mockImplementation((path, options) => {
+    state.advance(200);
+    return state.send(path, options);
+  });
+  const result = await requestWithRetry(state.request, '/api/productsList', { method: 'GET' });
   assert.equal(result, last.value);
-  assert.deepEqual(options, [
-    { timeout: 15_000, maxRetries: 0 },
-    { timeout: 13_800, maxRetries: 0 },
-  ]);
+  assert.deepEqual(
+    state.fetch.mock.calls.map((call) => call.arguments),
+    [
+      [
+        '/api/productsList',
+        { method: 'GET', timeout: 15_000, maxRetries: 0, failOnStatusCode: false },
+      ],
+      [
+        '/api/productsList',
+        { method: 'GET', timeout: 13_800, maxRetries: 0, failOnStatusCode: false },
+      ],
+    ],
+  );
   assert.deepEqual(state.waits, [1_000]);
   assert.equal(first.disposed(), 1);
   assert.equal(last.disposed(), 0);
-  assert.equal(state.histories.length, 1);
-  assert.equal(state.histories[0]?.outcome, 'recovered');
   assert.deepEqual(
-    state.histories[0]?.attempts.map((attempt) => attempt.status),
-    [503, 200],
+    state.log.mock.calls.map((call) => call.arguments),
+    [['[api-retry] GET /api/productsList: HTTP 503; retry 1/2']],
   );
 });
 
-await test('persistent 503 stops at three total attempts without a final wait', async () => {
-  const state = harness();
+await test('persistent 503 stops at three attempts without a final wait or extra log', async (context) => {
   const replies = [response(503), response(503), response(503)];
-  let calls = 0;
-  const result = await requestWithRetry(
-    () => Promise.resolve(replies[calls++]!.value),
-    state.operation,
-    state.clock,
+  const state = harness(
+    context,
+    replies.map((reply) => reply.value),
   );
-  assert.equal(result, replies[2]?.value);
-  assert.equal(calls, 3);
+  const result = await requestWithRetry(state.request, '/api/productsList', { method: 'GET' });
+  assert.equal(result, replies[2]!.value);
+  assert.equal(state.fetch.mock.callCount(), 3);
   assert.deepEqual(state.waits, [1_000, 2_000]);
   assert.deepEqual(
     replies.map((reply) => reply.disposed()),
     [1, 1, 0],
   );
-  assert.equal(state.histories[0]?.outcome, 'exhausted');
-});
-
-await test('other HTTP statuses and business rejections are never replayed', async () => {
-  for (const status of [200, 400, 401, 404, 429, 500, 501, 502, 504, 505]) {
-    const state = harness();
-    let calls = 0;
-    const reply = response(status, {}, { responseCode: 404, message: 'User not found!' });
-    const result = await requestWithRetry(
-      () => {
-        calls++;
-        return Promise.resolve(reply.value);
-      },
-      state.operation,
-      state.clock,
-    );
-    assert.equal(calls, 1);
-    assert.equal(result, reply.value);
-    assert.deepEqual(state.waits, []);
-    assert.deepEqual(state.histories, []);
-  }
-});
-
-await test('a non-503 rejection following a retry retains its actual response and stopped outcome', async () => {
-  const state = harness();
-  const replies = [response(503), response(400)];
-  let calls = 0;
-  const result = await requestWithRetry(
-    () => Promise.resolve(replies[calls++]!.value),
-    state.operation,
-    state.clock,
+  assert.deepEqual(
+    state.log.mock.calls.map((call) => String(call.arguments[0])),
+    [
+      '[api-retry] GET /api/productsList: HTTP 503; retry 1/2',
+      '[api-retry] GET /api/productsList: HTTP 503; retry 2/2',
+    ],
   );
-  assert.equal(result.status(), 400);
-  assert.equal(state.histories[0]?.outcome, 'stopped');
-  assert.equal(calls, 2);
+  await assert.rejects(readResponse(result, productsSchema), /HTTP 503/);
 });
 
-await test('Retry-After seconds/date are honored, including zero seconds', async () => {
-  for (const [header, delay] of [
-    ['3', 3_000],
-    ['0', 0],
-    ['Wed, 18 Nov 2026 12:00:04 GMT', 4_000],
-  ] as const) {
-    const state = harness();
-    const replies = [response(503, { 'retry-after': header }), response(200)];
-    let calls = 0;
-    await requestWithRetry(
-      () => Promise.resolve(replies[calls++]!.value),
-      state.operation,
-      state.clock,
-    );
+await test('other HTTP statuses and business rejections return without retries or logs', async (context) => {
+  const state = harness(context);
+  for (const status of [200, 400, 401, 404, 429, 500, 501, 502, 504, 505]) {
+    const reply = response(status, {}, { responseCode: 404, message: 'User not found!' });
+    state.fetch.mock.mockImplementation(() => Promise.resolve(reply.value));
+    const result = await requestWithRetry(state.request, '/api/example', { method: 'GET' });
+    assert.equal(result, reply.value);
+    assert.equal(reply.disposed(), 0);
+  }
+  assert.equal(state.fetch.mock.callCount(), 10);
+  assert.deepEqual(state.waits, []);
+  assert.equal(state.log.mock.callCount(), 0);
+});
+
+await test('a non-503 HTTP rejection following a retry retains its actual response', async (context) => {
+  const first = response(503);
+  const last = response(400);
+  const state = harness(context, [first.value, last.value]);
+  const result = await requestWithRetry(state.request, '/api/example', { method: 'GET' });
+  assert.equal(result, last.value);
+  assert.equal(state.fetch.mock.callCount(), 2);
+  assert.equal(first.disposed(), 1);
+  assert.equal(last.disposed(), 0);
+});
+
+for (const [header, delay] of [
+  ['3', 3_000],
+  ['0', 0],
+  [' 2 ', 2_000],
+  ['Wed, 18 Nov 2026 12:00:04 GMT', 4_000],
+] as const) {
+  await test(`Retry-After ${JSON.stringify(header)} controls the retry delay`, async (context) => {
+    const state = harness(context, [
+      response(503, { 'retry-after': header }).value,
+      response(200).value,
+    ]);
+    await requestWithRetry(state.request, '/api/example', { method: 'GET' });
     assert.deepEqual(state.waits, [delay]);
-  }
-});
+    assert.equal(state.fetch.mock.callCount(), 2);
+    assert.equal(state.log.mock.callCount(), 1);
+  });
+}
 
-await test('invalid or past Retry-After values use bounded fallback delays', async () => {
+await test('invalid or past Retry-After values use the 1s/2s fallback', async (context) => {
+  const state = harness(context);
   for (const header of ['', 'nonsense', '-1', '1.5', 'Wed, 18 Nov 2026 11:59:59 GMT']) {
-    const state = harness();
-    let calls = 0;
-    const reply = response(503, { 'retry-after': header });
-    await requestWithRetry(
-      () => {
-        calls++;
-        return Promise.resolve(reply.value);
-      },
-      state.operation,
-      state.clock,
+    state.fetch.mock.mockImplementation(() =>
+      Promise.resolve(response(503, { 'retry-after': header }).value),
     );
-    assert.equal(calls, 3);
-    assert.deepEqual(state.waits, [1_000, 2_000]);
+    await requestWithRetry(state.request, '/api/example', { method: 'GET' });
   }
+  assert.equal(state.fetch.mock.callCount(), 15);
+  assert.deepEqual(
+    state.waits,
+    [1_000, 2_000, 1_000, 2_000, 1_000, 2_000, 1_000, 2_000, 1_000, 2_000],
+  );
 });
 
-await test('Retry-After that consumes or exceeds the deadline stops without retrying early', async () => {
+await test('Retry-After consuming or exceeding the budget stops without waiting or logging a retry', async (context) => {
+  const state = harness(context);
   for (const header of ['15', '9999999999999999999999', 'Wed, 18 Nov 2026 12:01:00 GMT']) {
-    const state = harness();
-    let calls = 0;
     const reply = response(503, { 'retry-after': header });
+    state.fetch.mock.mockImplementation(() => Promise.resolve(reply.value));
     assert.equal(
-      await requestWithRetry(
-        () => {
-          calls++;
-          return Promise.resolve(reply.value);
-        },
-        state.operation,
-        state.clock,
-      ),
+      await requestWithRetry(state.request, '/api/example', { method: 'GET' }),
       reply.value,
     );
-    assert.equal(calls, 1);
-    assert.deepEqual(state.waits, []);
     assert.equal(reply.disposed(), 0);
-    assert.equal(state.histories[0]?.outcome, 'exhausted');
   }
-});
-
-await test('request duration and an overshooting delay cannot start a request past the deadline', async () => {
-  const state = harness();
-  let calls = 0;
-  const reply = response(503);
-  await requestWithRetry(
-    () => {
-      calls++;
-      state.advance(14_500);
-      return Promise.resolve(reply.value);
-    },
-    state.operation,
-    state.clock,
-  );
-  assert.equal(calls, 1);
+  assert.equal(state.fetch.mock.callCount(), 3);
   assert.deepEqual(state.waits, []);
-  const overshoot = harness();
-  await requestWithRetry(() => Promise.resolve(reply.value), overshoot.operation, {
-    ...overshoot.clock,
-    wait: () => {
-      overshoot.advance(15_000);
-      return Promise.resolve();
-    },
+  assert.equal(state.log.mock.callCount(), 0);
+});
+
+await test('a slow 503 request cannot schedule a delay beyond the budget', async (context) => {
+  const state = harness(context);
+  const reply = response(503);
+  state.fetch.mock.mockImplementation(() => {
+    state.advance(14_500);
+    return Promise.resolve(reply.value);
   });
-  assert.equal(overshoot.histories[0]?.attempts.length, 1);
-  assert.equal(overshoot.histories[0]?.outcome, 'exhausted');
-});
-
-await test('wall-clock jumps do not change the monotonic deadline', async () => {
-  const state = harness();
-  const timeouts: number[] = [];
-  let calls = 0;
-  await requestWithRetry(
-    (options) => {
-      timeouts.push(options.timeout);
-      calls++;
-      state.shiftWall(-86_400_000);
-      return Promise.resolve(response(calls === 1 ? 503 : 200).value);
-    },
-    state.operation,
-    state.clock,
+  assert.equal(
+    await requestWithRetry(state.request, '/api/example', { method: 'GET' }),
+    reply.value,
   );
-  assert.deepEqual(timeouts, [15_000, 14_000]);
+  assert.equal(state.fetch.mock.callCount(), 1);
+  assert.deepEqual(state.waits, []);
+  assert.equal(state.log.mock.callCount(), 0);
 });
 
-await test('a late success is rejected rather than accepted beyond the operation deadline', async () => {
-  const state = harness();
-  const reply = response(200);
-  await assert.rejects(
-    requestWithRetry(
-      () => {
-        state.advance(15_001);
-        return Promise.resolve(reply.value);
-      },
-      state.operation,
-      state.clock,
-    ),
-    /deadline exceeded/,
+await test('an overshooting backoff does not send or announce a request after the deadline', async (context) => {
+  const reply = response(503);
+  const state = harness(context, [reply.value]);
+  state.wait.mock.mockImplementation(() => {
+    state.advance(15_000);
+    return Promise.resolve();
+  });
+  assert.equal(
+    await requestWithRetry(state.request, '/api/example', { method: 'GET' }),
+    reply.value,
   );
-  assert.equal(reply.disposed(), 1);
+  assert.equal(state.fetch.mock.callCount(), 1);
+  assert.equal(state.log.mock.callCount(), 0);
+  assert.equal(reply.disposed(), 0);
 });
 
-await test('network/programming errors are propagated without retry and with safe history after a 503', async () => {
-  for (const failAfter503 of [false, true]) {
-    const state = harness();
-    const error = new Error('private-transport-message');
-    let calls = 0;
+await test('wall-clock jumps do not change the monotonic request deadline', async (context) => {
+  const state = harness(context, [response(503).value, response(200).value]);
+  state.fetch.mock.mockImplementation((path, options) => {
+    state.shiftWall(-86_400_000);
+    return state.send(path, options);
+  });
+  await requestWithRetry(state.request, '/api/example', { method: 'GET' });
+  assert.deepEqual(
+    state.fetch.mock.calls.map((call) => call.arguments[1]?.timeout),
+    [15_000, 14_000],
+  );
+});
+
+await test('responses arriving at or after the deadline are rejected and disposed', async (context) => {
+  const state = harness(context);
+  for (const duration of [15_000, 15_001]) {
+    const reply = response(200);
+    state.fetch.mock.mockImplementation(() => {
+      state.advance(duration);
+      return Promise.resolve(reply.value);
+    });
     await assert.rejects(
-      requestWithRetry(
-        () => {
-          calls++;
-          if (failAfter503 && calls === 1) return Promise.resolve(response(503).value);
-          return Promise.reject(error);
-        },
-        state.operation,
-        state.clock,
-      ),
+      requestWithRetry(state.request, '/api/example', { method: 'GET' }),
+      /deadline exceeded/,
+    );
+    assert.equal(reply.disposed(), 1);
+  }
+  assert.equal(state.fetch.mock.callCount(), 2);
+  assert.equal(state.log.mock.callCount(), 0);
+});
+
+await test('network errors propagate unchanged and dispose any previous 503 response', async (context) => {
+  const state = harness(context);
+  const error = new Error('private-transport-message');
+  for (const failAfter503 of [false, true]) {
+    const first = response(503);
+    let calls = 0;
+    state.fetch.mock.mockImplementation(() => {
+      calls++;
+      if (failAfter503 && calls === 1) return Promise.resolve(first.value);
+      return Promise.reject(error);
+    });
+    await assert.rejects(
+      requestWithRetry(state.request, '/api/example', { method: 'GET' }),
       (caught) => caught === error,
     );
     assert.equal(calls, failAfter503 ? 2 : 1);
-    assert.equal(state.histories.length, failAfter503 ? 1 : 0);
-    assert.doesNotMatch(JSON.stringify(state.histories), /private-transport-message/);
+    assert.equal(first.disposed(), failAfter503 ? 1 : 0);
   }
-});
-
-await test('retry diagnostics remove URL credentials/query/fragment and observer errors cannot mask results', async (context) => {
-  const state = harness();
-  state.operation.path =
-    'https://private-user:private-pass@automationexercise.com/api/productsList?email=private-email#private-fragment';
-  let calls = 0;
-  const log = context.mock.method(console, 'warn', () => {});
-  const result = await requestWithRetry(
-    () => Promise.resolve(response(++calls === 1 ? 503 : 200).value),
-    {
-      ...state.operation,
-      observer: () => {
-        throw new Error('private-observer-error');
-      },
-    },
-    state.clock,
+  assert.doesNotMatch(
+    JSON.stringify(state.log.mock.calls.map((call) => call.arguments)),
+    /private-/,
   );
-  assert.equal(result.status(), 200);
-  const output = JSON.stringify(log.mock.calls.map((call) => call.arguments));
-  assert.match(output, /productsList/);
-  assert.doesNotMatch(output, /private-|email=/);
-  assert.equal(log.mock.callCount(), 1);
 });
 
-await test('schema and malformed JSON errors are not retried by clients', async () => {
-  for (const payload of [{ responseCode: 200, products: 'wrong-shape' }, null]) {
-    let calls = 0;
-    const reply = response(200, {}, payload);
-    if (payload === null) reply.value.json = () => Promise.reject(new SyntaxError('Invalid JSON'));
-    const request = {
-      get: () => {
+await test('a rejected backoff preserves its error and disposes the 503 response', async (context) => {
+  const reply = response(503);
+  const state = harness(context, [reply.value]);
+  const error = new Error('Cancelled backoff');
+  state.wait.mock.mockImplementation(() => Promise.reject(error));
+  await assert.rejects(
+    requestWithRetry(state.request, '/api/example', { method: 'GET' }),
+    (caught) => caught === error,
+  );
+  assert.equal(reply.disposed(), 1);
+  assert.equal(state.fetch.mock.callCount(), 1);
+  assert.equal(state.log.mock.callCount(), 0);
+});
+
+await test('retry messages exclude URL credentials, query, fragment, headers, and body', async (context) => {
+  const state = harness(context, [response(503).value, response(200).value]);
+  await requestWithRetry(
+    state.request,
+    'https://private-user:private-pass@automationexercise.com/api/searchProduct?email=private-email#private-fragment',
+    {
+      method: 'POST',
+      headers: { Authorization: 'private-token' },
+      form: { search_product: 'private-query' },
+    },
+  );
+  assert.deepEqual(
+    state.log.mock.calls.map((call) => call.arguments),
+    [['[api-retry] POST /api/searchProduct: HTTP 503; retry 1/2']],
+  );
+});
+
+await test('request bodies, headers, and query options pass through while the helper owns retry settings', async (context) => {
+  const state = harness(context, [response(503).value, response(200).value]);
+  const options = {
+    method: 'POST',
+    data: { search_product: 'top' },
+    headers: { 'X-Test': 'demo' },
+    params: { page: 1 },
+    timeout: 99_999,
+    maxRetries: 5,
+    failOnStatusCode: true,
+  };
+  await requestWithRetry(state.request, '/api/searchProduct', options);
+  for (const call of state.fetch.mock.calls) {
+    assert.deepEqual(call.arguments[1], {
+      ...options,
+      timeout: call.arguments[1]?.timeout,
+      maxRetries: 0,
+      failOnStatusCode: false,
+    });
+    const timeout = call.arguments[1]?.timeout;
+    assert.ok(typeof timeout === 'number' && timeout > 0 && timeout <= 15_000);
+  }
+  assert.equal(options.timeout, 99_999);
+  assert.equal(options.maxRetries, 5);
+  assert.equal(options.failOnStatusCode, true);
+});
+
+await test('clients never retry schema or JSON errors, including after 503 recovery', async (context) => {
+  const state = harness(context);
+  for (const after503 of [false, true]) {
+    for (const payload of [{ responseCode: 200, products: 'wrong-shape' }, null]) {
+      const reply = response(200, {}, payload);
+      if (payload === null)
+        reply.value.json = () => Promise.reject(new SyntaxError('Invalid JSON'));
+      let calls = 0;
+      state.fetch.mock.mockImplementation(() => {
         calls++;
-        return Promise.resolve(reply.value);
-      },
-    } as unknown as APIRequestContext;
-    await assert.rejects(new CatalogClient(request).products());
-    assert.equal(calls, 1);
+        return Promise.resolve(after503 && calls === 1 ? response(503).value : reply.value);
+      });
+      await assert.rejects(new CatalogClient(state.request).products());
+      assert.equal(calls, after503 ? 2 : 1);
+    }
   }
 });
 
-await test('client replay policies preserve unsafe mutations and explicitly opt cleanup into retry handling', async () => {
-  const history: ApiRetryHistory[] = [];
-  const calls: { method: string; options: unknown }[] = [];
-  const unavailable = response(503, { 'retry-after': '15' });
-  const request = Object.fromEntries(
-    ['get', 'post', 'delete'].map((method) => [
-      method,
-      (_url: string, options: unknown) => {
-        calls.push({ method, options });
-        return Promise.resolve(unavailable.value);
-      },
-    ]),
-  ) as unknown as APIRequestContext;
-  const accounts = new AccountsClient(request, (entry) => history.push(entry));
+await test('account creation and explicit deletion stay single-shot on HTTP 503', async (context) => {
+  const state = harness(context);
+  const unavailable = response(503);
+  const post = context.mock.fn((_path: string, _options: RequestOptions) =>
+    Promise.resolve(unavailable.value),
+  );
+  const remove = context.mock.fn((_path: string, _options: RequestOptions) =>
+    Promise.resolve(unavailable.value),
+  );
+  const accounts = new AccountsClient({
+    fetch: state.fetch,
+    post,
+    delete: remove,
+  } as unknown as APIRequestContext);
   const user = createUser('retry-check', 0, 0);
   await assert.rejects(accounts.create(user), /HTTP 503/);
   await assert.rejects(accounts.delete(user), /HTTP 503/);
-  assert.equal(history.length, 0);
-  assert.equal(calls.length, 2);
-  for (const call of calls) assert.equal((call.options as { maxRetries: number }).maxRetries, 0);
-  await assert.rejects(accounts.delete(user, { retryOn503: true }), /HTTP 503/);
-  await assert.rejects(accounts.getByEmail(user.email), /HTTP 503/);
-  await assert.rejects(accounts.verifyLogin(user), /HTTP 503/);
-  await assert.rejects(
-    new CatalogClient(request, (entry) => history.push(entry)).products(),
-    /HTTP 503/,
-  );
-  await assert.rejects(
-    new CatalogClient(request, (entry) => history.push(entry)).search('top'),
-    /HTTP 503/,
-  );
-  assert.deepEqual(
-    history.map((entry) => entry.operation),
-    [
-      'accounts.cleanup',
-      'accounts.details',
-      'accounts.verifyLogin',
-      'catalog.products',
-      'catalog.search',
-    ],
-  );
-  assert.ok(history.every((entry) => entry.attempts.length === 1 && entry.outcome === 'exhausted'));
-  assert.doesNotMatch(JSON.stringify(history), new RegExp(user.email.replaceAll('.', '\\.')));
-  assert.doesNotMatch(JSON.stringify(history), new RegExp(user.password));
+  assert.equal(post.mock.callCount(), 1);
+  assert.equal(remove.mock.callCount(), 1);
+  assert.equal(post.mock.calls[0]!.arguments[0], '/api/createAccount');
+  assert.equal(remove.mock.calls[0]!.arguments[0], '/api/deleteAccount');
+  assert.equal(post.mock.calls[0]!.arguments[1].maxRetries, 0);
+  assert.equal(remove.mock.calls[0]!.arguments[1].maxRetries, 0);
+  assert.equal(state.fetch.mock.callCount(), 0);
+  assert.deepEqual(state.waits, []);
+  assert.equal(state.log.mock.callCount(), 0);
 });
 
-await test('a replayed delete still exposes actual business 404 instead of fabricating 200', async () => {
-  const state = harness();
-  const replies = [
-    response(503),
-    response(200, {}, { responseCode: 404, message: 'Account not found!' }),
-  ];
-  let calls = 0;
-  const actual = await requestWithRetry(
-    () => Promise.resolve(replies[calls++]!.value),
-    { ...state.operation, method: 'DELETE', operation: 'accounts.cleanup' },
-    state.clock,
-  );
-  const parsed = await readResponse(actual, messageSchema);
-  assert.equal(parsed.httpStatus, 200);
-  assert.equal(parsed.body.responseCode, 404);
-});
-
-await test('safe clients replay identical query/form inputs and preserve actual business results', async (context) => {
-  context.mock.timers.enable({ apis: ['setTimeout'] });
-  // Timer mocks update the builtin module; synchronize its already-imported ESM binding.
-  syncBuiltinESMExports();
-  context.after(() => {
-    context.mock.timers.reset();
-    syncBuiltinESMExports();
-  });
-  const cases = [
-    {
-      operation: 'search',
-      method: 'post',
-      path: '/api/searchProduct',
-      input: { form: { search_product: 'top' } },
-      payload: { responseCode: 200, products: [] },
-    },
-    {
-      operation: 'details',
-      method: 'get',
-      path: '/api/getUserDetailByEmail',
-      input: { params: { email: 'owned@example.com' } },
-      payload: {
-        responseCode: 200,
-        user: {
-          id: 1,
-          name: 'QA',
-          email: 'owned@example.com',
-          first_name: 'QA',
-          last_name: 'User',
-          address1: '42 Test Avenue',
-          country: 'India',
-          state: 'Karnataka',
-          city: 'Bengaluru',
-          zipcode: '560001',
-        },
+const scenarios = [
+  {
+    operation: 'products',
+    method: 'GET',
+    path: '/api/productsList',
+    input: {},
+    payload: { responseCode: 200, products: [] },
+  },
+  {
+    operation: 'search',
+    method: 'POST',
+    path: '/api/searchProduct',
+    input: { form: { search_product: 'top' } },
+    payload: { responseCode: 200, products: [] },
+  },
+  {
+    operation: 'details',
+    method: 'GET',
+    path: '/api/getUserDetailByEmail',
+    input: { params: { email: 'owned@example.com' } },
+    payload: {
+      responseCode: 200,
+      user: {
+        id: 1,
+        name: 'QA',
+        email: 'owned@example.com',
+        first_name: 'QA',
+        last_name: 'User',
+        address1: '42 Test Avenue',
+        country: 'India',
+        state: 'Karnataka',
+        city: 'Bengaluru',
+        zipcode: '560001',
       },
     },
-    {
-      operation: 'verify',
-      method: 'post',
-      path: '/api/verifyLogin',
-      input: { form: { email: 'owned@example.com', password: 'invalid-password' } },
-      payload: { responseCode: 404, message: 'User not found!' },
-    },
-    {
-      operation: 'cleanup',
-      method: 'delete',
-      path: '/api/deleteAccount',
-      input: { form: { email: 'owned@example.com', password: 'invalid-password' } },
-      payload: { responseCode: 404, message: 'Account not found!' },
-    },
-  ] as const;
-  for (const scenario of cases) {
-    const calls: {
-      method: string;
-      path: string;
-      options: { timeout: number; maxRetries: number; form?: unknown; params?: unknown };
-    }[] = [];
-    const histories: ApiRetryHistory[] = [];
-    const request = Object.fromEntries(
-      ['get', 'post', 'delete'].map((method) => [
-        method,
-        (path: string, options: (typeof calls)[number]['options']) => {
-          calls.push({ method, path, options: structuredClone(options) });
-          return Promise.resolve(
-            calls.length === 1 ? response(503).value : response(200, {}, scenario.payload).value,
-          );
-        },
-      ]),
-    ) as unknown as APIRequestContext;
-    const accounts = new AccountsClient(request, (history) => histories.push(history));
-    const catalog = new CatalogClient(request, (history) => histories.push(history));
+  },
+  {
+    operation: 'verify',
+    method: 'POST',
+    path: '/api/verifyLogin',
+    input: { form: { email: 'owned@example.com', password: 'invalid-password' } },
+    payload: { responseCode: 404, message: 'User not found!' },
+  },
+  {
+    operation: 'cleanup',
+    method: 'DELETE',
+    path: '/api/deleteAccount',
+    input: { form: { email: 'owned@example.com', password: 'invalid-password' } },
+    payload: { responseCode: 404, message: 'Account not found!' },
+  },
+] as const;
+
+for (const scenario of scenarios) {
+  await test(`${scenario.operation} replays identical inputs and preserves the actual business result`, async (context) => {
+    const first = response(503);
+    const last = response(200, {}, scenario.payload);
+    const state = harness(context, [first.value, last.value]);
     const credentials = { email: 'owned@example.com', password: 'invalid-password' };
-    const pending = {
+    state.wait.mock.mockImplementation(() => {
+      state.advance(1_000);
+      credentials.email = 'changed-after-request@example.com';
+      credentials.password = 'changed-after-request';
+      return Promise.resolve();
+    });
+    const accounts = new AccountsClient(state.request);
+    const catalog = new CatalogClient(state.request);
+    const result = await {
+      products: () => catalog.products(),
       search: () => catalog.search('top'),
       details: () => accounts.getByEmail(credentials.email),
       verify: () => accounts.verifyLogin(credentials),
       cleanup: () => accounts.delete(credentials, { retryOn503: true }),
     }[scenario.operation]();
-    // Flush promise continuations until the transport schedules its mocked backoff.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    credentials.email = 'changed-after-request@example.com';
-    credentials.password = 'changed-after-request';
-    context.mock.timers.tick(1_000);
-    const result = await pending;
-    assert.equal(result.body.responseCode, scenario.payload.responseCode);
-    assert.equal(calls.length, 2);
-    for (const call of calls) {
-      const { timeout, ...requestInput } = call.options;
-      assert.ok(timeout > 0 && timeout <= 15_000);
-      assert.equal(call.method, scenario.method);
-      assert.equal(call.path, scenario.path);
-      assert.deepEqual(requestInput, { maxRetries: 0, ...scenario.input });
+    assert.equal(result.httpStatus, 200);
+    assert.deepEqual(result.body, scenario.payload);
+    assert.equal(state.fetch.mock.callCount(), 2);
+    for (const call of state.fetch.mock.calls) {
+      assert.equal(call.arguments[0], scenario.path);
+      const { timeout, ...input } = call.arguments[1]!;
+      assert.ok(timeout! > 0 && timeout! <= 15_000);
+      assert.deepEqual(input, {
+        method: scenario.method,
+        ...scenario.input,
+        maxRetries: 0,
+        failOnStatusCode: false,
+      });
     }
-    assert.equal(histories[0]?.outcome, 'recovered');
-    assert.equal(histories[0]?.attempts.length, 2);
-  }
-});
-
-await test('backoff cancellation preserves its error and disposes the discarded response', async () => {
-  const state = harness();
-  const reply = response(503);
-  const error = new Error('Cancelled backoff');
-  await assert.rejects(
-    requestWithRetry(() => Promise.resolve(reply.value), state.operation, {
-      ...state.clock,
-      wait: () => Promise.reject(error),
-    }),
-    (caught) => caught === error,
-  );
-  assert.equal(reply.disposed(), 1);
-  assert.equal(state.histories[0]?.outcome, 'failed');
-  assert.equal(state.histories[0]?.attempts.length, 1);
-});
+    assert.equal(first.disposed(), 1);
+    assert.equal(last.disposed(), 0);
+    assert.equal(state.log.mock.callCount(), 1);
+  });
+}

@@ -3,7 +3,7 @@
 **Target Application:** [Automation Exercise](https://automationexercise.com)  
 **Tech Stack:** Playwright `1.65` · TypeScript `5.9` (Strict ESM) · Zod `4.6` · Node.js `24 LTS` · Codex MCP Agents
 
-An agent-native end-to-end and API test framework covering **5 critical UI journeys**, **4 API contract scenarios**, and **59 offline AST/framework checks**—designed so both engineers and AI coding agents contribute safely through a single typed fixture surface.
+An agent-native end-to-end and API test framework covering **5 critical UI journeys**, **4 API contract scenarios**, and **62 offline AST/framework checks**—designed so both engineers and AI coding agents contribute safely through a single typed fixture surface.
 
 > [!TIP]
 > **Zero-Config Local Execution**
@@ -27,7 +27,7 @@ npm ci
 npx playwright install chromium
 # (On Linux / Ubuntu, use: npx playwright install --with-deps chromium)
 
-# 4. Run static verification (Prettier, TypeScript, ESLint, AST rules, 59 offline unit checks)
+# 4. Run static verification (Prettier, TypeScript, ESLint, AST rules, 62 offline unit checks)
 npm run verify
 
 # 5. Execute all 9 critical API & UI scenarios
@@ -46,8 +46,8 @@ npm test
 | `npm run test:ui -- --debug`                          | Open Playwright Inspector                                                        |
 | `npm test -- --workers=2`                             | Override worker count                                                            |
 | `npm run test:ui -- --shard=1/2`                      | Run native Playwright CLI sharding                                               |
-| `npm run verify`                                      | Run **formatting, types, lint, architecture rules, and 59 framework unit tests** |
-| `npm run test:framework`                              | Run only the 59 offline framework unit tests (Node test runner)                  |
+| `npm run verify`                                      | Run **formatting, types, lint, architecture rules, and 62 framework unit tests** |
+| `npm run test:framework`                              | Run only the 62 offline framework unit tests (Node test runner)                  |
 | `npm run check:architecture`                          | Run the repository AST architecture checker directly                             |
 | `npm run report`                                      | Open the latest HTML report (`playwright-report/index.html`)                     |
 | `npm run format`                                      | Format the repository with Prettier                                              |
@@ -65,7 +65,7 @@ npm test
 | `src/domain`                   | Domain types, Zod response schemas, and integer-paise currency calculations                |
 | `src/config`                   | Zod-validated environment settings (`environment.ts`)                                      |
 | `scripts`                      | Seed-preserving native agent initialization (`init-agents.mjs`)                            |
-| `tests/framework`              | 59 offline unit tests covering AST rules, account cleanup, ad-blocking, API, and money     |
+| `tests/framework`              | 62 offline unit tests covering AST rules, account cleanup, ad-blocking, API, and money     |
 | `tests/framework/architecture` | Repository AST architecture checker, file discovery helper, and checker unit tests         |
 | `specs`, `AGENTS.md`, `.codex` | Agent contribution workflow, repository rules, native agents, and MCP configuration        |
 | `.github/workflows`            | CI quality gate, API job, and Chromium UI job                                              |
@@ -98,7 +98,25 @@ Read-only catalogue/search, account lookup, and credential verification retry **
 
 Creation and explicit account deletion remain single-shot because a failed response can hide a completed mutation. Fixture cleanup explicitly opts deletion into recovery and continues accepting actual business `200/404` results. No successful business response is fabricated. Native request `maxRetries` is disabled so transport retries do not multiply.
 
-Recovered and exhausted 503 operations appear in console summaries and the test report's **`api-retry-history.json`** attachment, containing method/path, status history, attempt count, delays, and elapsed time. Payloads, credentials, and URL queries are excluded. A `recovered` outcome describes HTTP transport recovery; business assertions and Zod validation still run normally. API and UI tests inherit one whole-test retry in CI and zero locally. Each test attempt owns its account identity and cleanup; creation and explicit deletion remain single-shot within an attempt. Tests that pass only on a whole-test retry are classified as flaky and still fail CI. Browser navigation failures are outside the request-level retry policy.
+Clients pass the request context, endpoint, and ordinary Playwright request options to one helper. It uses `request.fetch()` internally; `method` controls the HTTP method, and `form`, `data`, `headers`, and `params` retain their normal Playwright meanings:
+
+```ts
+const response = await requestWithRetry(this.request, CATALOG_ROUTES.search, {
+  method: 'POST',
+  form: { search_product: query },
+});
+return readResponse(response, productsSchema);
+```
+
+The helper controls request timeouts and disables native retries and `failOnStatusCode` so it can inspect 503 responses. Limits live in [`src/config/api-retry.ts`](src/config/api-retry.ts). Immediately before each retry request, it prints one line:
+
+```text
+[api-retry] POST /api/searchProduct: HTTP 503; retry 1/2
+```
+
+First-attempt success and operations that stop without retrying produce no retry message. Logs contain only the method, endpoint path, status, and retry number; payloads, credentials, headers, URL queries, and fragments are excluded. Retry reporting needs no observers, stored histories, or report attachments. The final response still goes through normal HTTP, JSON, Zod, and business validation.
+
+API and UI tests inherit one whole-test retry in CI and zero locally. Each test attempt owns its account identity and cleanup; creation and explicit deletion remain single-shot within an attempt. Tests that pass only on a whole-test retry are classified as flaky and still fail CI. Browser navigation failures are outside the request-level retry policy.
 
 ## 🔌 4. Fixtures, Data Isolation & Network Policy
 
@@ -114,7 +132,7 @@ Recovered and exhausted 503 operations appear in console summaries and the test 
 > [!IMPORTANT]
 > **Isolation, Validation & Ad-Blocking Guarantees**
 >
-> - **Fault-Preserving Account Teardown:** `userDraftFixture` in `src/fixtures/test.ts` owns creation, use, and `finally` teardown. Cleanup failures fail otherwise passing tests; if the test body already failed, the primary error is preserved and cleanup diagnostics are attached separately (`account-cleanup-failure`).
+> - **Native Account Teardown Reporting:** `userDraftFixture` in `src/fixtures/test.ts` owns the identity and attempts cleanup in `finally`, including after provisioning or test failures. Cleanup errors propagate to Playwright: they fail an otherwise passing test and are recorded alongside an existing test error. No custom cleanup attachments or error aggregation are needed.
 > - **Dual-Layer API Validation & Paise Math:** The app sends JSON with a `text/html` content-type and may return `HTTP 200` for business errors. Clients validate payloads with **Zod**, tests verify HTTP status and JSON `responseCode` separately, and currency is compared in integer paise (`rupeesToPaise`).
 > - **Context-Level Google Ad Blocking:** The `context` fixture aborts requests only to `doubleclick.net`, `googlesyndication.com`, and their subdomains (`blockedbyclient`) before page creation and blocks service workers so routing cannot be bypassed. All application endpoints and non-ad Google assets remain live.
 

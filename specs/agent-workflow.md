@@ -18,9 +18,11 @@ Native examples sometimes use raw page operations. Translate those observations 
 
 Run `npm run verify`, the affected test with `npm test -- --project=ui tests/ui/<file>.spec.ts`, then `npm test` before accepting the contribution. Built-in reports and traces provide diagnostics.
 
-Read-only API calls and fixture deletion cleanup have bounded HTTP 503 retries in the transport layer. Inspect `api-retry-history.json` attachments for recovered or exhausted service failures. Preserve the single-shot create/delete API contract tests, and never turn business rejections or schema failures into retries. Bounded network backoff is the only exception to the no-fixed-sleeps rule; UI actions and assertions still use observable application conditions.
+Read-only API calls and fixture deletion cleanup have bounded HTTP 503 retries in the transport layer. Inspect `[api-retry]` console lines for retried requests. Keep API calls callback-free: pass the request context, endpoint, and Playwright options to `requestWithRetry`; it owns timeouts, 503 backoff, and minimal logging. Do not add observers, retry histories, or report attachments. Preserve the single-shot create/delete API contract tests, and never turn business rejections or schema failures into retries. Bounded network backoff is the only exception to the no-fixed-sleeps rule; UI actions and assertions still use observable application conditions.
 
 API and UI tests inherit one whole-test retry in CI and zero locally. Account creation and explicit deletion remain single-shot within each attempt; a retried test receives a fresh account identity and attempts its own cleanup. A pass after a whole-test retry remains flaky and fails CI under failOnFlakyTests.
+
+Account cleanup runs in `finally` and lets errors propagate to Playwright's native teardown reporting. A cleanup error fails a passing test; if the test already failed, the runner records both errors. Keep the offline runner regression in `tests/framework/cleanup-reporting.test.ts`; do not replace it with a rejecting fake `use` callback, which does not reproduce the runner's fixture lifecycle. No custom cleanup attachments or error aggregation are needed.
 
 For a failure, ask `playwright_test_healer` to reproduce and inspect the failing test, preserve its intended assertions and cleanup, and apply the smallest repair. No sleeps, forced actions, skipped/focused/expected-failure tests, mocks, or state injection. Stop after two unsuccessful patches and report evidence of a product defect.
 
