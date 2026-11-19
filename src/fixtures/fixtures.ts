@@ -4,10 +4,12 @@ import { AccountsClient } from '../api/accounts-client.js';
 import { CatalogClient } from '../api/catalog-client.js';
 import { requireResponseCode } from '../api/read-response.js';
 import { environment } from '../config/environment.js';
+import { uiRecoveryConfig } from '../config/ui-recovery.js';
 import { createUser } from '../data/user-factory.js';
 import type { Account, UserDraft } from '../domain/models.js';
 import type { Product } from '../domain/contracts.js';
 import { Application } from '../pages/application.js';
+import { installQueueRecovery } from '../pages/queue-full-page.js';
 
 const GOOGLE_AD_DOMAINS = ['doubleclick.net', 'googlesyndication.com'];
 
@@ -87,6 +89,12 @@ export const test = base.extend<FrameworkFixtures>({
     // Install before the page fixture creates a page; includes iframe and popup traffic.
     await context.route(isGoogleAdUrl, (route) => route.abort('blockedbyclient'));
     await use(context);
+  },
+
+  /** Installs queue recovery before exposing the page; API-only tests leave this fixture unused. */
+  page: async ({ page }, use) => {
+    await installQueueRecovery(page, environment.baseURL, uiRecoveryConfig);
+    await use(page);
   },
 
   api: apiFixture,

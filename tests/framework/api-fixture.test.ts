@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { APIRequestContext, APIResponse } from '@playwright/test';
-import { apiFixture, userDraftFixture } from '../../src/fixtures/test.js';
+import { apiFixture, userDraftFixture } from '../../src/fixtures/fixtures.js';
 
 function response(status: number, payload: unknown): APIResponse {
   // Supply only the transport/parser methods exercised by the real API clients.

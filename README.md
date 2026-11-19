@@ -3,7 +3,7 @@
 **Target Application:** [Automation Exercise](https://automationexercise.com)  
 **Tech Stack:** Playwright `1.65` · TypeScript `5.9` (Strict ESM) · Zod `4.6` · Node.js `24 LTS` · Codex MCP Agents
 
-An agent-native end-to-end and API test framework covering **5 critical UI journeys**, **4 API contract scenarios**, and **62 offline AST/framework checks**—designed so both engineers and AI coding agents contribute safely through a single typed fixture surface.
+An agent-native end-to-end and API test framework covering **5 critical UI journeys**, **4 API contract scenarios**, and **75 offline AST/framework checks**—designed so both engineers and AI coding agents contribute safely through a single typed fixture surface.
 
 > [!TIP]
 > **Zero-Config Local Execution**
@@ -27,7 +27,7 @@ npm ci
 npx playwright install chromium
 # (On Linux / Ubuntu, use: npx playwright install --with-deps chromium)
 
-# 4. Run static verification (Prettier, TypeScript, ESLint, AST rules, 62 offline unit checks)
+# 4. Run static verification (Prettier, TypeScript, ESLint, AST rules, 75 offline unit checks)
 npm run verify
 
 # 5. Execute all 9 critical API & UI scenarios
@@ -46,8 +46,8 @@ npm test
 | `npm run test:ui -- --debug`                          | Open Playwright Inspector                                                        |
 | `npm test -- --workers=2`                             | Override worker count                                                            |
 | `npm run test:ui -- --shard=1/2`                      | Run native Playwright CLI sharding                                               |
-| `npm run verify`                                      | Run **formatting, types, lint, architecture rules, and 62 framework unit tests** |
-| `npm run test:framework`                              | Run only the 62 offline framework unit tests (Node test runner)                  |
+| `npm run verify`                                      | Run **formatting, types, lint, architecture rules, and 75 framework unit tests** |
+| `npm run test:framework`                              | Run only the 75 offline framework unit tests (Node test runner)                  |
 | `npm run check:architecture`                          | Run the repository AST architecture checker directly                             |
 | `npm run report`                                      | Open the latest HTML report (`playwright-report/index.html`)                     |
 | `npm run format`                                      | Format the repository with Prettier                                              |
@@ -57,22 +57,22 @@ npm test
 | Folder                         | Responsibility                                                                             |
 | :----------------------------- | :----------------------------------------------------------------------------------------- |
 | `tests/ui`, `tests/api`        | Business assertions for application journeys (`UI-001`–`UI-005`) and API (`API-001`–`004`) |
-| `src/fixtures`                 | Single test entrypoint (`test.ts`), account ownership, authentication, and cleanup         |
+| `src/fixtures`                 | Single test entrypoint (`fixtures.ts`), account ownership, authentication, and cleanup     |
 | `src/pages`                    | Page objects, shared UI components, and their `Application` composition root               |
 | `src/assertions`               | Shared `toHaveApiOutcome` API matcher and web-first `expectCartLine` assertions            |
 | `src/api`                      | Account/catalogue clients, form mappers, and runtime Zod response validation               |
 | `src/data`                     | Unique synthetic user (`createUser`) and payment (`createPayment`) factories               |
 | `src/domain`                   | Domain types, Zod response schemas, and integer-paise currency calculations                |
-| `src/config`                   | Zod-validated environment settings (`environment.ts`)                                      |
+| `src/config`                   | Validated environment settings and bounded API/UI recovery limits                          |
 | `scripts`                      | Seed-preserving native agent initialization (`init-agents.mjs`)                            |
-| `tests/framework`              | 62 offline unit tests covering AST rules, account cleanup, ad-blocking, API, and money     |
+| `tests/framework`              | 75 offline unit tests covering AST rules, account cleanup, ad-blocking, API, and money     |
 | `tests/framework/architecture` | Repository AST architecture checker, file discovery helper, and checker unit tests         |
 | `specs`, `AGENTS.md`, `.codex` | Agent contribution workflow, repository rules, native agents, and MCP configuration        |
 | `.github/workflows`            | CI quality gate, API job, and Chromium UI job                                              |
 
 ### Reusable Requests & Assertions (Single Import Surface)
 
-Tests import `test`, `expect`, and `expectCartLine` from `src/fixtures/test.ts`. Page Objects own selectors and interactions without imposing success assertions; tests own business expectations:
+Tests import `test`, `expect`, and `expectCartLine` from `src/fixtures/fixtures.ts`. Page Objects own selectors and interactions without imposing success assertions; tests own business expectations:
 
 ```ts
 // Declarative HTTP + business responseCode assertion (redacts full payload from failure diffs)
@@ -118,6 +118,14 @@ First-attempt success and operations that stop without retrying produce no retry
 
 API and UI tests inherit one whole-test retry in CI and zero locally. Each test attempt owns its account identity and cleanup; creation and explicit deletion remain single-shot within an attempt. Tests that pass only on a whole-test retry are classified as flaky and still fail CI. Browser navigation failures are outside the request-level retry policy.
 
+### Queue-Full Page Recovery
+
+The page fixture installs one `addLocatorHandler` before page use. It recognizes the exact heading **This website is under heavy load (queue full)** and refreshes only when the current main document returned HTTP 503 for a reviewed same-origin GET page: `/login`, `/products`, `/product_details/<id>`, or `/view_cart`. POST submissions, POST-origin redirects, mutating GET routes, unknown pages, and unrelated errors are not refreshed.
+
+[`src/config/ui-recovery.ts`](src/config/ui-recovery.ts) sets **2 refreshes per page/test**, a **15-second cumulative recovery budget**, and **1s/2s fallback delays**. Valid `Retry-After` headers are honored when they fit the remaining budget. Only time spent inside recovery consumes the budget. Each actual refresh logs a sanitized line such as `[ui-recovery] GET /products: HTTP 503 queue full; refresh 1/2`.
+
+If the queue persists or recovery is refused, Playwright fails the attempt and retains native failure artifacts; owned-account cleanup still runs. Recovery activates before an action or auto-waiting assertion, so it cannot rescue an already timed-out navigation. Reloads wait for DOMContentLoaded to inspect the replacement document; business assertions continue to verify the expected application state. API-only execution does not instantiate the page fixture or launch a browser.
+
 ## 🔌 4. Fixtures, Data Isolation & Network Policy
 
 | Fixture            | Description                                                                                                      |
@@ -132,7 +140,7 @@ API and UI tests inherit one whole-test retry in CI and zero locally. Each test 
 > [!IMPORTANT]
 > **Isolation, Validation & Ad-Blocking Guarantees**
 >
-> - **Native Account Teardown Reporting:** `userDraftFixture` in `src/fixtures/test.ts` owns the identity and attempts cleanup in `finally`, including after provisioning or test failures. Cleanup errors propagate to Playwright: they fail an otherwise passing test and are recorded alongside an existing test error. No custom cleanup attachments or error aggregation are needed.
+> - **Native Account Teardown Reporting:** `userDraftFixture` in `src/fixtures/fixtures.ts` owns the identity and attempts cleanup in `finally`, including after provisioning or test failures. Cleanup errors propagate to Playwright: they fail an otherwise passing test and are recorded alongside an existing test error. No custom cleanup attachments or error aggregation are needed.
 > - **Dual-Layer API Validation & Paise Math:** The app sends JSON with a `text/html` content-type and may return `HTTP 200` for business errors. Clients validate payloads with **Zod**, tests verify HTTP status and JSON `responseCode` separately, and currency is compared in integer paise (`rupeesToPaise`).
 > - **Context-Level Google Ad Blocking:** The `context` fixture aborts requests only to `doubleclick.net`, `googlesyndication.com`, and their subdomains (`blockedbyclient`) before page creation and blocks service workers so routing cannot be bypassed. All application endpoints and non-ad Google assets remain live.
 
@@ -169,4 +177,4 @@ Defaults work without an environment file. Optionally copy `.env.example` to `.e
   ```
 - **Contribution Guardrails:** Follow [AGENTS.md](AGENTS.md) and [specs/agent-workflow.md](specs/agent-workflow.md). `npm run verify` rejects raw `@playwright/test` imports, inline spec selectors, forbidden layer imports, sleeps, forced UI actions, skipped/focused tests, constant assertions, and floating promises.
 - **GitHub Actions & Trace Diagnostics:** `.github/workflows/playwright.yml` runs the `quality` gate (`npm run verify`) before independent `api` and `ui` jobs (`WORKERS=1`, 1 whole-test retry, `failOnFlakyTests: true`, no AI in CI). Built-in HTML/JUnit reports, failure traces, and screenshots are retained for 7 days. Locally, inspect `playwright-report/index.html` or run `npx playwright show-trace <trace.zip>`.
-- **Architecture & AI Logs:** See **[DECISIONS.md](DECISIONS.md)** for the 5 key architecture decisions and **[AI_USAGE.md](AI_USAGE.md)** for prompts, AI mistakes caught, corrections, and verification evidence.
+- **Architecture & AI Logs:** See **[DECISIONS.md](DECISIONS.md)** for the 6 key architecture decisions and **[AI_USAGE.md](AI_USAGE.md)** for prompts, AI mistakes caught, corrections, and verification evidence.

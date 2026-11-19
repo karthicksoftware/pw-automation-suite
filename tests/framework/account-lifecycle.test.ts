@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { userDraftFixture } from '../../src/fixtures/test.js';
+import { userDraftFixture } from '../../src/fixtures/fixtures.js';
 import type { Credentials, UserDraft } from '../../src/domain/models.js';
 
 type FixtureDependencies = Parameters<typeof userDraftFixture>[0];

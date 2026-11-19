@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { productFixture } from '../../src/fixtures/test.js';
+import { productFixture } from '../../src/fixtures/fixtures.js';
 import type { Product } from '../../src/domain/contracts.js';
 
 const products: Product[] = [

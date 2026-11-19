@@ -1,4 +1,4 @@
-import { test, expect } from '../src/fixtures/test.js';
+import { test, expect } from '../src/fixtures/fixtures.js';
 
 // The Codex launcher sets AGENT_SEED=1 for the native agent's fixture-aware seed.
 test('agent seed opens the catalogue with framework fixtures', async ({ app }) => {

@@ -19,7 +19,7 @@ interface ReportedSpec {
 
 await test('Playwright records test, provisioning, and cleanup errors without custom reporting', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pw-cleanup-reporting-'));
-  const fixturePath = fileURLToPath(new URL('../../src/fixtures/test.ts', import.meta.url));
+  const fixturePath = fileURLToPath(new URL('../../src/fixtures/fixtures.ts', import.meta.url));
   const cliPath = fileURLToPath(
     new URL('../../node_modules/@playwright/test/cli.js', import.meta.url),
   );

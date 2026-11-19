@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { ESLint } from 'eslint';
 import { analyzeSource } from './check-architecture.js';
 
-const entrypoint = "import { test, expect } from '../../src/fixtures/test.js';\n";
+const entrypoint = "import { test, expect } from '../../src/fixtures/fixtures.js';\n";
 const file = 'tests/ui/example.spec.ts';
 
 await test('accepts fixture-based tests and selector ownership inside a page object', () => {
@@ -86,8 +86,8 @@ await test('enforces dependency direction for pages, API clients, domain, and te
     ['src/pages/bad.ts', "import '../../tests/ui/cart.spec.js';"],
     ['src/api/bad.ts', "import '../pages/cart-page.js';"],
     ['src/api/bad.ts', "import '../../tests/framework/architecture/check-architecture.js';"],
-    ['src/domain/bad.ts', "import '../fixtures/test.js';"],
-    ['src/assertions/bad.ts', "import '../fixtures/test.js';"],
+    ['src/domain/bad.ts', "import '../fixtures/fixtures.js';"],
+    ['src/assertions/bad.ts', "import '../fixtures/fixtures.js';"],
     ['src/api/bad.ts', "import '../assertions/api-expect.js';"],
     ['src/pages/bad.ts', "import '../assertions/cart.js';"],
     [file, `${entrypoint}import '../../src/api/accounts-client.js';`],
@@ -109,7 +109,7 @@ await test('enforces dependency direction for pages, API clients, domain, and te
 
 await test('shared assertion helpers are supported through the fixture entrypoint', async () => {
   const source =
-    "import { test, expectCartLine } from '../../src/fixtures/test.js';\n\n" +
+    "import { test, expectCartLine } from '../../src/fixtures/fixtures.js';\n\n" +
     "test('UI-010 checks a cart line', async ({ app }) => { await expectCartLine(app.cart.product(1), { name: 'Top', quantity: 2, totalPaise: 100000 }); });";
   assert.deepEqual(analyzeSource(file, source), []);
   const lint = new ESLint();

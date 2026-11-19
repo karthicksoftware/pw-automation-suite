@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { isGoogleAdUrl } from '../../src/fixtures/test.js';
+import { isGoogleAdUrl } from '../../src/fixtures/fixtures.js';
 
 await test('blocks Google ad domains and their subdomains, including the observed script and frame hosts', () => {
   for (const address of [

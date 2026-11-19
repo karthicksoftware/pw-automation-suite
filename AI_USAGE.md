@@ -1,7 +1,7 @@
 # 🤖 AI Usage & Engineering Verification Log (`AI_USAGE.md`)
 
 **Tools Used:** Codex CLI + Playwright Native MCP Agents (`playwright_test_planner`, `playwright_test_generator`, `playwright_test_healer`)  
-**Verification Standard:** Every AI contribution was validated using targeted framework unit tests, static AST/type/lint checks (`npm run verify`, covering **62 offline checks**), live application runs, and failure traces.
+**Verification Standard:** Every AI contribution was validated using targeted framework unit tests, static AST/type/lint checks (`npm run verify`, covering **75 offline checks**), live application runs, and failure traces.
 
 > [!IMPORTANT]
 > **How AI Was Used in This Repository**
@@ -222,3 +222,33 @@ The native generator simplified userDraftFixture to try/finally, retained the sa
 The parent added a permanent offline regression using the actual framework fixtures inside a temporary Playwright run. It verifies that all five outcome combinations attempt cleanup and that combined failures retain both error messages in order. Intentional child-test failures are asserted by the passing Node framework test; they are outside application discovery, use stubbed account operations, and require no browser or network. The regression passed before final suite validation. Current documentation and agent guidance now describe native teardown reporting; earlier usage entries retain their historical implementation details.
 
 **Final verification:** Under Node 24, npm run verify passed formatting, strict TypeScript, lint, architecture checks, and all 62 framework tests. CI=true AGENT_SEED=1 npm run test:all completed with nine passing scenarios and one flaky scenario in 1.6 minutes. All five UI scenarios and the seed passed on their first attempt. API-003 received HTTP 503 on its explicit single-shot DELETE, and then passed on its whole-test retry. The first attempt's trace showed cleanup still issued a separate DELETE returning HTTP 200. A later cleanup 503 also recovered through the existing request-level retry. The CI-mode command exited 1 under failOnFlakyTests; it is not claimed as a green full-suite run. No API retry policy or business assertion was changed to hide that service failure.
+
+## Bounded UI queue-page recovery
+
+**User request:** The user supplied screenshots of the queue-full page and a browser GET /products returning HTTP 503, excluded form submission recovery, and asked the native healer to implement the approved bounded locator-handler plan with readable, modular code and minimal boilerplate.
+
+The healer's native baseline ran all ten existing tests successfully before implementation. Added one queue recovery helper, a small configuration file, and a page-fixture hook before page use. The helper requires the exact queue heading and a matching same-origin HTTP 503 main-document GET on four reviewed read-only routes. It tracks only the current document, the refresh count, and cumulative recovery time. Two refreshes and 15 seconds of handler time are the defaults; unrelated business-step time does not consume the recovery budget. Valid Retry-After headers, fallback delays, remaining reload timeouts, sanitized logs, and explicit refusal/exhaustion errors are retained without histories, observers, attachments, or a base-page abstraction. POST documents/redirect origins, mutating GETs, XHR/iframe failures, and unknown routes are excluded. API retry and account cleanup behavior remain unchanged.
+
+**Actual corrections and review:** Focused lint caught an unbound method in a response test double; the healer replaced it with an arrow. Review identified that the document could change during backoff, so safety is checked again immediately before refreshing, with a regression for navigation changing to POST. A standalone browser probe confirmed successful recovery but exposed that locator-handler errors reject through Playwright's event callback rather than the interrupted click promise. The parent checked runner error handling and moved the controlled probe into Playwright Test, verifying native failure reporting instead of adding process-level handlers or production reporting wrappers.
+
+All 13 new offline tests, TypeScript, focused ESLint, formatting, and whitespace checks passed. A temporary local HTTP server and Chromium run exercised the actual framework fixtures in eleven controlled cases: direct and link navigation recovery, recovery on the second refresh, persistent queues, HTTP 200 queue content, unsafe GETs, excessive Retry-After, POST documents, POST-origin redirects, iframe queues, and unrelated 503 content. Five cases passed normally; six intentionally failed with the expected recovery message. The parent verified server request counts, no POST replay, sanitized logs, screenshot/trace attachments on all intentional failures, and owned-account cleanup in every case. These are isolated framework checks; no public application traffic was mocked or modified.
+
+**Final verification:** Under Node 24, npm run verify passed formatting, TypeScript, lint, architecture checks, and all 75 framework tests. CI=true AGENT_SEED=1 npm run test:all passed all ten live API/UI/seed scenarios in 51.0 seconds without whole-test retries. No queue-page recovery was needed in that live run; the controlled Chromium cases provide recovery/exhaustion evidence. A separate API-only run with an unavailable browser installation path passed all four scenarios in 6.9 seconds, confirming the page fixture remains lazy. The temporary local server, browser, scripts, and probe artifacts were removed after validation.
+
+### Queue-recovery JSDoc
+
+The user requested clear JSDoc for the newly added functions. Documented installation timing, current-URL reload behavior, parameters and return values, safe document/redirect checks, cumulative budgets, Retry-After parsing, diagnostic redaction, and handler failure reporting. Added concise comments for local helpers, configuration fields, and page-fixture registration. This was a comment-only change; npm run verify passed all quality checks and 75 framework tests. Live application tests were not repeated for documentation-only edits.
+
+### Queue-page decision rationale
+
+The user requested documenting their observed problem and its fix in the existing DECISIONS.md list. Expanded decision 3 with the observed GET /products HTTP 503 queue page, why backend API retries did not cover it, the central locator-handler/current-page reload solution, and its limits and failure reporting. This documentation-only update was checked with Prettier and git diff --check; no application tests were rerun.
+
+An intermediate edit misunderstood the requested placement and put queue recovery inside decision 4. The user clarified that it must be a new numbered decision 6. Added that standalone section with the observed problem, chosen approach, rejected alternatives, code example, and flip trigger; restored decision 4 to ad blocking only. Added the sixth matrix row and updated the README's decision count. Formatting and whitespace checks passed; runtime code was unchanged.
+
+### Queue-page module rename
+
+The user requested renaming the queue recovery module to `queue-full-page.ts`. Renamed the source file and updated fixture imports, framework-test imports, and the decision reference. Function names and runtime behavior remain unchanged. `npm run verify` passed all quality checks and 75 framework tests; live tests were not repeated for this path-only change.
+
+### Fixture entrypoint rename
+
+The user requested renaming `src/fixtures/test.ts` to `src/fixtures/fixtures.ts`. Updated application and seed imports, framework tests, the temporary-runner fixture path, architecture-checker recognition and diagnostics, current documentation, and repository guidance. Historical prompt quotations above retain their original filenames. `npm run verify` passed all quality checks and 75 framework tests; Playwright discovery resolved all ten application/seed scenarios. Live application tests were not repeated for this path-only change.
